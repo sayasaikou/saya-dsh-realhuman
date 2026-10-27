@@ -482,6 +482,36 @@ export function apply(ctx, config = {}) {
       return `停不了 PID ${pid}：${err?.message ?? err}`;
     }
   }
+  /**
+   * spawn 一个进程，等它真的起来了才算成功。
+   *
+   * 为什么不能只包 try/catch：spawn 的「命令不存在」（ENOENT）是**异步 error 事件**，
+   * 不是同步异常 —— try/catch 一个都抓不到。而没挂 'error' 监听器的时候，
+   * Node 会把它当未捕获错误抛出去，**崩的是宿主进程，不是那个子进程**。
+   *
+   * 2026-10-27 她读完 `ensureRuntime` 指出来的。第一版就是这么写的，
+   * 而且 `child.pid` 在 ENOENT 时是 undefined，pid 文件会写进一个 "undefined"。
+   */
+  function spawnReady(cmd, args, opts) {
+    return new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(cmd, args, opts);
+      } catch (err) {
+        resolve({ ok: false, error: err, child: null });
+        return;
+      }
+      const done = (ok, error) => {
+        child.removeListener('spawn', onSpawn);
+        child.removeListener('error', onError);
+        resolve({ ok, error, child });
+      };
+      const onSpawn = () => done(true, null);
+      const onError = (err) => done(false, err);
+      child.once('spawn', onSpawn);
+      child.once('error', onError);
+    });
+  }
   async function ensureRuntime() {
     console.log(`观测页配置：servePage=${cfg.servePage} port=${cfg.pagePort} bind=${cfg.pageBind}`);
     if (cfg.servePage === false) return '';
@@ -549,17 +579,24 @@ export function apply(ctx, config = {}) {
       }
       // stderr 落到文件 —— 用 ignore 的话，页面起不来就完全没有任何线索
       const errLog = join(DSH_HOME, 'realheart', 'rh-status.err.log');
+      let fh;
       try {
-        const fh = await open(errLog, 'a');
-        const child = spawn('python3', [join(dir, 'rh-status.py')], {
-          cwd: dir, detached: true, stdio: ['ignore', fh.fd, fh.fd],
-        });
-        child.unref();
-        await fh.close();
-        await writeFile(join(DSH_HOME, 'realheart', 'rh-status.pid'), String(child.pid), 'utf8');
+        fh = await open(errLog, 'a');
       } catch (err) {
-        return `起观测页失败（python3 在不在？）：${err?.message ?? err}`;
+        return `打不开日志文件 ${errLog}：${err?.message ?? err}`;
       }
+      const r = await spawnReady('python3', [join(dir, 'rh-status.py')], {
+        cwd: dir, detached: true, stdio: ['ignore', fh.fd, fh.fd],
+      });
+      await fh.close();
+      if (!r.ok) {
+        if (r.error?.code === 'ENOENT') {
+          return '起观测页失败：找不到 python3（装了没有？Ubuntu: apt install python3）';
+        }
+        return `起观测页失败：${r.error?.message ?? r.error}`;
+      }
+      r.child.unref();
+      await writeFile(join(DSH_HOME, 'realheart', 'rh-status.pid'), String(r.child.pid), 'utf8');
     }
 
     return `http://127.0.0.1:${cfg.pagePort}/${secret}/`;
@@ -708,17 +745,20 @@ export function apply(ctx, config = {}) {
 
   async function wakeHer() {
     const stamp = new Date().toISOString();
+    const r = await spawnReady('dsh', ['--profile', cfg.freeTimeProfile, FREE_PROMPT], {
+      cwd: QQROOT, detached: true, stdio: 'ignore', env: process.env,
+    });
+    if (!r.ok) {
+      // 定时器里跑的，没人看着 —— 这里打死都不能把错误冒出去
+      log(`自由时间叫不醒她：${r.error?.code === 'ENOENT' ? '找不到 dsh（PATH 变了？）' : (r.error?.message ?? r.error)}`, 'error');
+      return;
+    }
+    r.child.unref();
     try {
-      const child = spawn('dsh', ['--profile', cfg.freeTimeProfile, FREE_PROMPT], {
-        cwd: QQROOT, detached: true, stdio: 'ignore', env: process.env,
-      });
-      child.unref();
       await appendFile(join(cfg.stateDir, 'free-time.jsonl'),
         `${JSON.stringify({ at: stamp, kind: 'wake', by: 'plugin' })}\n`, 'utf8');
-      log(`自由时间：已叫她（PID ${child.pid}）`);
-    } catch (err) {
-      log(`自由时间叫不醒她：${err?.message ?? err}`, 'error');
-    }
+    } catch { /* 记不上不影响唤醒本身 */ }
+    log(`自由时间：已叫她（PID ${r.child.pid}）`);
   }
 
   function scheduleNextWake() {
@@ -943,6 +983,7 @@ export function apply(ctx, config = {}) {
     log(`rh_mood / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
   })();
 }
+
 
 
 
