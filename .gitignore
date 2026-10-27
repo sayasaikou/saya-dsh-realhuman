@@ -1,1 +1,5 @@
 .gitmsg.tmp
+__pycache__/
+*.pyc
+config.json
+

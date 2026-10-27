@@ -1,0 +1,27 @@
+{
+  "name": "realheart",
+  "version": "0.1.0",
+  "description": "给她一个能记账的心情层：心情必须有来处，改动必须有账，她自己能停能查",
+  "type": "module",
+  "main": "index.mjs",
+  "files": [
+    "index.mjs",
+    "runtime/",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "realheart",
+    "persona",
+    "memory",
+    "state"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "license": "MIT"
+}
