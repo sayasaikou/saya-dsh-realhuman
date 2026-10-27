@@ -158,7 +158,7 @@ async function waitForTools(ctx, tries = 40, gapMs = 250) {
   return undefined;
 }
 
-export const name = 'realheart-core';
+export const name = 'realheart';
 
 const QQROOT = join(os.homedir(), 'qqbot');
 const DSH_HOME = process.env.DSH_HOME || join(os.homedir(), '.dsh');
@@ -399,9 +399,9 @@ export function apply(ctx, config = {}) {
       try {
         const parts = [];
         const mood = await moodSectionText();
-        if (mood) parts.push({ name: 'realheart-core:mood', order: 900, text: mood });
+        if (mood) parts.push({ name: 'realheart:mood', order: 900, text: mood });
         const pending = await pendingChangeText();
-        if (pending) parts.push({ name: 'realheart-core:pending-change', order: 901, text: pending });
+        if (pending) parts.push({ name: 'realheart:pending-change', order: 901, text: pending });
         if (!parts.length) return assembled;
         const sections = Array.isArray(assembled?.sections) ? assembled.sections : [];
         const payload = parts.map((x) => `--- ${x.name} ---\n${x.text}`).join('\n\n');
@@ -1004,6 +1004,7 @@ export function apply(ctx, config = {}) {
     log(`rh_mood / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
   })();
 }
+
 
 
 
