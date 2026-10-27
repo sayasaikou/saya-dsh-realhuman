@@ -9,6 +9,7 @@
     "setup.mjs",
     "cordis.patch.yml",
     "runtime/",
+    "scripts/",
     "README.md",
     "LICENSE"
   ],
@@ -33,3 +34,4 @@
   },
   "license": "MIT"
 }
+

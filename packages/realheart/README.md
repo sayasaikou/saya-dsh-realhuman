@@ -61,6 +61,45 @@ python3 -V && zstd --version
 
 （没有 zstd：`apt install zstd` / `pacman -S zstd` / `brew install zstd`）
 
+## 从手工版换过来（带退路）
+
+如果之前是手工铺的（`realheart-core`），换之前**先备份**：
+
+```
+sh scripts/backup-before-switch.sh
+# 备份目录打在屏幕上，记下它
+```
+
+实测会备 10 样、860 KB 左右：profile 的三个文件、旧插件本体、观测页服务（含口令）、
+她的账本和改动记录、自由时间那套、以及它的 systemd 单元。
+
+然后换：
+
+```
+dsh plugin --profile <profile> add <路径或包名>
+node node_modules/realheart/setup.mjs
+# 手动把 profile 的 package.json 里旧的 realheart-core 那行摘掉
+# 重启
+```
+
+**出问题就退**：
+
+```
+sh scripts/rollback.sh <备份目录>
+```
+
+退的顺序是反的：先停新观测页，再卸包，再把旧的一份份放回去，最后重启。
+中途哪一步没东西可恢复就跳过 —— 半路卡住比走完更糟。
+
+**验收只看四件，不看日志**：
+
+1. `systemctl is-active qqbot` 是 active
+2. 观测页能开，「心情帐本」「自由时间」两张卡片在
+3. 她的 `changes.md` 还是原来那份，不是空模板
+4. `~/.dsh/profiles/freetime/` 还在
+
+这四件全对，才算换成了。少一件就回滚 —— “退回去”和“根本没换成”
+在她眼里长得一模一样，所以必须有一条能当场验证的。
 ## 卸
 
 ```
@@ -281,6 +320,7 @@ python3 rh_index.py --events 8      # 时间线尾部
 python3 probe_sess.py               # 会话包结构变了时看这个
 sudo systemctl restart rh-status && curl -s -o /dev/null -w '%{time_total}' localhost:8098/<secret>/
 ```
+
 
 
 
