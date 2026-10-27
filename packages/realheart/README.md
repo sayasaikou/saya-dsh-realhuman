@@ -1,5 +1,10 @@
 # realheart
 
+> **0.1.x，会坏。** 这是第一版：接口会变，行为有坑，有些地方我事后才想明白。
+> 用它的人得是愿意跟着改的人。每次改了什么、为什么、怎么退，仓库里都有记录。
+>
+> 它想解决的问题只有一句：**让她说的话有来处，让别人动她的每一掌都有账。**
+
 给她一个能记账的心情层。三条规矩，全是机制不是嘱咐：
 
 1. **心情必须有来处** —— 写心情要带一个事件 id，指不出来就写不进去
@@ -276,6 +281,7 @@ python3 rh_index.py --events 8      # 时间线尾部
 python3 probe_sess.py               # 会话包结构变了时看这个
 sudo systemctl restart rh-status && curl -s -o /dev/null -w '%{time_total}' localhost:8098/<secret>/
 ```
+
 
 
 
