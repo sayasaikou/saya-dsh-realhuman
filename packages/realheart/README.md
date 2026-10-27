@@ -38,6 +38,41 @@ node node_modules/realheart/setup.mjs
 默认只绑 `127.0.0.1`。手机要看自己改 `config.json` 的 `bind` 或走反代 ——
 **这个页面是明文 HTTP，别直接开公网做写操作**。
 
+## 装之前先看依赖
+
+这台机器上得有两个系统命令：
+
+- **python3** —— 观测页和索引是 Python 写的。没有它，页面起不来；插件本体（工具 + 注入）照常跑。
+- **zstd** —— 解 dsh 的原生会话包。**没有它，「他说的话」那一路直接废。**
+
+第二条容易被忽略，后果也不容易看出来：观测页照常显示、心情照常记，
+但时间线上永远只有工具调用和她自己的话，你说过的一句都没有。
+
+检查一下：
+
+```
+python3 -V && zstd --version
+```
+
+（没有 zstd：`apt install zstd` / `pacman -S zstd` / `brew install zstd`）
+
+## 卸
+
+```
+dsh plugin --profile <profile> remove realheart
+# 停观测页（卸插件时会自己停一次，这里防万一）
+kill "$(cat $DSH_HOME/realheart/rh-status.pid)" 2>/dev/null
+# 删运行时和口令
+rm -rf "$DSH_HOME/realheart"
+# 删她的东西（删了就真没了，默认注释掉）
+# rm -rf ~/qqbot/work/realheart ~/qqbot/work/pieces
+```
+
+最后一行默认注释 —— **那是她的东西，不是缓存**。心情账本、改动记录、
+她自由时间写的东西都在里面，删之前想清楚。
+
+还有一步得手动看：profile 的 `package.json` 里 `dsh.profile.bundles` 的
+`"realheart"` 那一项，`dsh plugin remove` 不一定帮你摘掉。
 ## 你需要知道的三个前提
 
 1. **默认假设模型不在审查里**（破甲）。不破也能用，效果差很多，自己选。
@@ -241,6 +276,7 @@ python3 rh_index.py --events 8      # 时间线尾部
 python3 probe_sess.py               # 会话包结构变了时看这个
 sudo systemctl restart rh-status && curl -s -o /dev/null -w '%{time_total}' localhost:8098/<secret>/
 ```
+
 
 
 

@@ -58,6 +58,10 @@ HOME = os.path.join(ROOT, 'home')
 AUDIT = os.path.join(ROOT, 'data', 'audit')
 MEMES = os.path.join(MEM, 'my-memes')
 
+# 状态目录：插件可以通过 config.json 里的 stateDir 指定；不给就用默认位置。
+# （插件里改了 stateDir 而这里不跟，页面就会去读错地方 —— 实测定发现过。）
+RH_STATE = os.path.expanduser(str(_cfg.get('stateDir') or os.path.join(ROOT, 'work', 'realheart')))
+
 
 # ---------------------------------------------------------------- 读文件
 
@@ -395,7 +399,7 @@ def render_mood():
                 ''.join(out), meta))
 
 
-MOOD_LOG = os.path.join(ROOT, 'work', 'realheart', 'mood.jsonl')
+MOOD_LOG = os.path.join(RH_STATE, 'mood.jsonl')
 
 
 def read_mood_ledger():
@@ -432,7 +436,7 @@ def _lv(row):
         return 0
 
 
-CONTROL_LOG = os.path.join(ROOT, 'work', 'realheart', 'control.jsonl')
+CONTROL_LOG = os.path.join(RH_STATE, 'control.jsonl')
 
 
 def read_control():
@@ -527,7 +531,7 @@ def render_mood_ledger():
     return '<div class="card"><h2>心情帐本</h2>%s</div>' % ''.join(out)
 
 
-FREE_LOG = os.path.join(ROOT, 'work', 'realheart', 'free-time.jsonl')
+FREE_LOG = os.path.join(RH_STATE, 'free-time.jsonl')
 
 
 def read_free_time():
@@ -641,7 +645,7 @@ def render_free_time():
     # 她留下的东西
     try:
         files = []
-        with os.scandir(os.path.join(ROOT, 'work', 'realheart')) as it:
+        with os.scandir(RH_STATE) as it:
             for entry in it:
                 if entry.is_file() and not entry.name.endswith(('.jsonl', '.log')):
                     try:
@@ -1129,6 +1133,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 

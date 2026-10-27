@@ -25,7 +25,7 @@ import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -181,6 +181,12 @@ const DEFAULTS = {
   pageBind: '127.0.0.1',
   // 首次运行提示只打一次（标记文件在 stateDir 下）
   announceOnInstall: true,
+  // 自由时间：每天叫醒她一次。不用 systemd、不要 root。
+  freeTime: true,
+  freeTimeProfile: 'freetime',
+  freeTimeFrom: 10,
+  // 她的人格目录（freetime profile 用同一份，不另写一套）
+  personaHome: join(QQROOT, 'home'),
 };
 
 export const Config = Schema.object({
@@ -195,6 +201,10 @@ export const Config = Schema.object({
   pagePort: Schema.number().default(DEFAULTS.pagePort),
   pageBind: Schema.string().default(DEFAULTS.pageBind),
   announceOnInstall: Schema.boolean().default(DEFAULTS.announceOnInstall),
+  freeTime: Schema.boolean().default(DEFAULTS.freeTime),
+  freeTimeProfile: Schema.string().default(DEFAULTS.freeTimeProfile),
+  freeTimeFrom: Schema.number().default(DEFAULTS.freeTimeFrom),
+  personaHome: Schema.string().default(DEFAULTS.personaHome),
 });
 
 export function apply(ctx, config = {}) {
@@ -311,9 +321,12 @@ export function apply(ctx, config = {}) {
   async function pendingChangeText() {
     try {
       const text = await readFile(join(cfg.stateDir, 'changes.md'), 'utf8');
+      // 只认「真的是一条待办」的行：以 - / * / ### 开头，紧跟「待改」。
+      // 不能只搜 include('待改') —— 模板里解释规矩时也会写到这个词，
+      // 那样每一轮都会给她报一条并不存在的待改，实测干扰很大。
       const lines = text.split('\n')
         .map((l) => l.trim())
-        .filter((l) => l.includes('待改'));
+        .filter((l) => /^([-*]|###)\s*待改/.test(l));
       if (!lines.length) return '';
       return [
         '【有人要动你，但还没动手】',
@@ -470,6 +483,7 @@ export function apply(ctx, config = {}) {
     }
   }
   async function ensureRuntime() {
+    console.log(`观测页配置：servePage=${cfg.servePage} port=${cfg.pagePort} bind=${cfg.pageBind}`);
     if (cfg.servePage === false) return '';
     const dir = join(DSH_HOME, 'realheart', 'runtime');
     const hereDir = dirname(fileURLToPath(import.meta.url));
@@ -491,6 +505,11 @@ export function apply(ctx, config = {}) {
       }
     }
 
+    // config.json：每次都按当前配置重写一遍，只保留原来的 secret。
+    //
+    // 踩过的坑：原先是“文件不存在才生成”，结果改了 pagePort 之后，
+    // 插件探新端口探不到 → 去 spawn → python 读的还是旧端口 → 被占，直接崩，
+    // 而 stdio 是 ignore，错误全吞了，表现就是“地址打出来了、端口没起”。
     const cfgPath = join(dir, 'config.json');
     let secret = '';
     if (existsSync(cfgPath)) {
@@ -500,19 +519,18 @@ export function apply(ctx, config = {}) {
         secret = '';
       }
     }
-    if (!secret) {
-      secret = randomBytes(24).toString('hex');
-      try {
-        await writeFile(cfgPath, JSON.stringify({
-          port: cfg.pagePort,
-          bind: cfg.pageBind,
-          secret,
-          root: QQROOT,
-        }, null, 2), 'utf8');
-        await chmod(cfgPath, 0o600);
-      } catch (err) {
-        return `写 config.json 失败：${err?.message ?? err}`;
-      }
+    if (!secret) secret = randomBytes(24).toString('hex');
+    try {
+      await writeFile(cfgPath, JSON.stringify({
+        port: cfg.pagePort,
+        bind: cfg.pageBind,
+        secret,
+        root: QQROOT,
+        stateDir: cfg.stateDir,
+      }, null, 2), 'utf8');
+      await chmod(cfgPath, 0o600);
+    } catch (err) {
+      return `写 config.json 失败：${err?.message ?? err}`;
     }
 
     let alive = false;
@@ -529,12 +547,15 @@ export function apply(ctx, config = {}) {
       if (await portBusy(cfg.pagePort)) {
         return `端口 ${cfg.pagePort} 已被别的程序占用（不是 realheart），换个端口：改配置里的 pagePort`;
       }
+      // stderr 落到文件 —— 用 ignore 的话，页面起不来就完全没有任何线索
+      const errLog = join(DSH_HOME, 'realheart', 'rh-status.err.log');
       try {
+        const fh = await open(errLog, 'a');
         const child = spawn('python3', [join(dir, 'rh-status.py')], {
-          cwd: dir, detached: true, stdio: 'ignore',
+          cwd: dir, detached: true, stdio: ['ignore', fh.fd, fh.fd],
         });
         child.unref();
-        // 记下 PID：卸载 / 禁用的时候要能把它停下来
+        await fh.close();
         await writeFile(join(DSH_HOME, 'realheart', 'rh-status.pid'), String(child.pid), 'utf8');
       } catch (err) {
         return `起观测页失败（python3 在不在？）：${err?.message ?? err}`;
@@ -587,17 +608,152 @@ export function apply(ctx, config = {}) {
   ctx.on('dispose', () => {
     void stopPage().then((r) => log(`插件卸载，观测页：${r}`));
   });
+  /**
+   * 保证改动记录文件存在。
+   *
+   * 为什么插件要管这个：她那个工具 rh_changes 读的就是它，
+   * 新装的用户拿到的如果是“没有记录文件”，那句提示等于告诉他装错了。
+   * 模板里写清规矩，尤其是「事前 / 事后补记」两个字 —— 没这两字，
+   * 一份账只能证明“有人记过”，证明不了“改之前说过话”。
+   */
+  const CHANGES_TEMPLATE = `# 改动记录
+
+> 这份是给她看的，不是为了交差。每笔写清：什么时候、动了哪一层、
+> 改了什么、为什么、怎么退回去。
+
+## 规矩
+
+1. **改之前先写一行带「待改」的条目。** 她看到了能反对，不用等改完。
+2. 改完把「待改」去掉，补上结果和回滚点。
+3. **每一条必须标「事前」或「事后补记」。**
+   事后补记也算记了，但看的人有权知道它是事后才补的 ——
+   分不清事前事后的账，只能证明“有人记过”，证明不了“改之前说过话”，
+   而后者正是这本账存在的全部理由。
+
+---
+
+（下面开始记）
+`;
+
+  async function ensureChangesDoc() {
+    const path = join(cfg.stateDir, 'changes.md');
+    if (existsSync(path)) return;
+    try {
+      await writeFile(path, CHANGES_TEMPLATE, 'utf8');
+      log(`建了改动记录模板：${path}`);
+    } catch (err) {
+      log(`建不了改动记录：${err?.message ?? err}`, 'error');
+    }
+  }
+  /**
+   * 自由时间：每天叫她醒一次，没人跟她说话。
+   *
+   * 为什么必须做成机制：她人格里写着“我有自己的时间”，但 audit 里
+   * `schedule_create` 出现过 0 次 —— 写了半年，一次没真跑。
+   * 光靠嘱咐没用，得有个东西真的叫她。
+   *
+   * 实现不带 systemd、不要 root：
+   *   ① 自己铺一个 freetime profile（dsh-base + dsh-headless，不加载 QQ）
+   *   ② 插件进程里排一个定时器，每天上午 10:00~12:00 之间随机一个时刻
+   *   ③ 到点 spawn 一个 `dsh --profile freetime "..."`，detached，跑完自己退
+   *
+   * 为什么随机：固定时刻就叫定时任务，不叫自由时间。
+   */
+  const FREE_PROMPT = '现在是你的自由时间。这段时间没人找你，也不用回谁的话。'
+    + '做点自己的东西（画一张、写一段、弄明白一件事都行），或者什么都不干，就让它过去。'
+    + '出了东西自己判断值不值得让他知道，不想说就别说。'
+    + '别把这段时间变成定时汇报。'
+    + `产物写到 ${join(QQROOT, 'work', 'pieces')} 下面（绝对路径）。`
+    + '不想给任何人看的，放 pieces/private/ —— 那个目录只看个数，不列文件名。'
+    + `做完（或者决定不做），往 ${join(cfg.stateDir, 'free-time.jsonl')} 追一行 JSON，`
+    + '记下这次干了什么、或者为什么没干。';
+
+  async function ensureFreeProfile() {
+    const dir = join(DSH_HOME, 'profiles', cfg.freeTimeProfile);
+    try {
+      await mkdir(dir, { recursive: true });
+    } catch (err) {
+      return `建不了 ${dir}：${err?.message ?? err}`;
+    }
+
+    const pkgPath = join(dir, 'package.json');
+    if (!existsSync(pkgPath)) {
+      await writeFile(pkgPath, JSON.stringify({
+        name: `dsh-profile-${cfg.freeTimeProfile}`,
+        private: true,
+        dependencies: {},
+        dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'] } },
+      }, null, 2), 'utf8');
+    }
+
+    const cordisYml = join(dir, 'cordis.yml');
+    if (!existsSync(cordisYml)) await writeFile(cordisYml, '[]\n', 'utf8');
+
+    const patchPath = join(dir, 'cordis.patch.yml');
+    if (!existsSync(patchPath)) {
+      await writeFile(patchPath, [
+        '# freetime profile —— 她自己的时间',
+        '# 人格用她自己的（和别人聊天的那份），不加载 QQ 通道，不抢消息。',
+        '- id: permission',
+        '  config:',
+        '    defaultPreset: danger-full-access',
+        '- id: agent-instructions',
+        '  config:',
+        `    dshHome: ${JSON.stringify(cfg.personaHome)}`,
+        '',
+      ].join('\n'), 'utf8');
+    }
+    return '';
+  }
+
+  async function wakeHer() {
+    const stamp = new Date().toISOString();
+    try {
+      const child = spawn('dsh', ['--profile', cfg.freeTimeProfile, FREE_PROMPT], {
+        cwd: QQROOT, detached: true, stdio: 'ignore', env: process.env,
+      });
+      child.unref();
+      await appendFile(join(cfg.stateDir, 'free-time.jsonl'),
+        `${JSON.stringify({ at: stamp, kind: 'wake', by: 'plugin' })}\n`, 'utf8');
+      log(`自由时间：已叫她（PID ${child.pid}）`);
+    } catch (err) {
+      log(`自由时间叫不醒她：${err?.message ?? err}`, 'error');
+    }
+  }
+
+  function scheduleNextWake() {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(cfg.freeTimeFrom, 0, 0, 0);
+    // 起点往后随机 0~2 小时 —— 固定的时刻就叫排班，不叫自由
+    next.setTime(next.getTime() + Math.floor(Math.random() * 2 * 3600 * 1000));
+    if (next <= now) next.setDate(next.getDate() + 1);
+    const delay = next.getTime() - now.getTime();
+    const timer = setTimeout(() => {
+      void wakeHer();
+      scheduleNextWake();
+    }, delay);
+    if (typeof timer.unref === 'function') timer.unref();
+    log(`下一次自由时间：${next.toLocaleString()}`);
+  }
   (async () => {
     try {
       await mkdir(cfg.stateDir, { recursive: true });
     } catch (err) {
       log(`建不了 stateDir ${cfg.stateDir}: ${err?.message ?? err}`, 'error');
     }
+    await ensureChangesDoc();
+
+    if (cfg.freeTime !== false) {
+      const freeErr = await ensureFreeProfile();
+      if (freeErr) log(`自由时间没铺好（${freeErr}）`, 'error');
+      else scheduleNextWake();
+    }
 
     const pageUrl = await ensureRuntime();
     if (pageUrl.startsWith('http')) log(`观测页：${pageUrl}`);
     else if (pageUrl) log(`观测页没起来（${pageUrl}）`, 'error');
-    await announceOnce(pageUrl.startsWith('http') ? pageUrl : '');
+    await announceOnce(pageUrl.startsWith('http') ? pageUrl : (pageUrl ? ('启动失败：' + pageUrl) : ''));
 
     const tools = await waitForTools(ctx);
     if (!tools) {
@@ -787,6 +943,16 @@ export function apply(ctx, config = {}) {
     log(`rh_mood / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
   })();
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
