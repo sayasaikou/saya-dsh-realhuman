@@ -1,5 +1,5 @@
 /**
- * realheart-core —— 状态层：心情账本 + 写入闸
+ * realheart —— 状态层：心情账本 + 写入闸
  *
  * 只做一件事：让她能记下自己此刻的心情，但必须指一件事。
  *
@@ -211,7 +211,7 @@ export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...config };
   if (cfg.enabled === false) return;
   const log = (msg, level = 'info') => {
-    const line = `[realheart-core] ${msg}`;
+    const line = `[realheart] ${msg}`;
     try {
       if (level === 'error' && typeof ctx.logger?.error === 'function') ctx.logger.error(line);
       else if (typeof ctx.logger?.info === 'function') ctx.logger.info(line);
@@ -597,6 +597,27 @@ export function apply(ctx, config = {}) {
       }
       r.child.unref();
       await writeFile(join(DSH_HOME, 'realheart', 'rh-status.pid'), String(r.child.pid), 'utf8');
+
+      // 起来了不等于在听 —— 进程可能刚创建就崩（缺依赖、端口又被抢、config 不对）。
+      // 她指出过这个取舍：不等它回话就报地址，“起来了但立刻崩”看不见。
+      // 现在最多等 5 秒 healthz，不通就如实说，而不是给一个打不开的地址。
+      let healthy = false;
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise((res) => setTimeout(res, 500));
+        try {
+          const probe = await fetch(`http://127.0.0.1:${cfg.pagePort}/${secret}/healthz`,
+            { signal: AbortSignal.timeout(1000) });
+          if (probe.ok) {
+            healthy = true;
+            break;
+          }
+        } catch {
+          /* 还没起来，继续等 */
+        }
+      }
+      if (!healthy) {
+        return `观测页进程起来了（PID ${r.child.pid}），但 5 秒内没响应 —— 看 ${errLog} 末尾`;
+      }
     }
 
     return `http://127.0.0.1:${cfg.pagePort}/${secret}/`;
@@ -983,6 +1004,8 @@ export function apply(ctx, config = {}) {
     log(`rh_mood / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
   })();
 }
+
+
 
 
 
