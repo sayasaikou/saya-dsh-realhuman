@@ -1,0 +1,9 @@
+# realheart 作为 profile 层怎么插进去。
+#
+# 这份文件的作用：让 `dsh plugin add realheart` 装完之后**自动生效**，
+# 不需要用户再去手改 cordis.patch.yml。
+# （不带 dsh.bundle 声明的话，dsh 会提示「installed as a plain dependency,
+#   not a profile layer」—— 装了但不起作用，第一次就是踩的这个。）
+- insert:
+    - id: realheart
+      name: 'realheart'

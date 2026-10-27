@@ -6,6 +6,8 @@
   "main": "index.mjs",
   "files": [
     "index.mjs",
+    "setup.mjs",
+    "cordis.patch.yml",
     "runtime/",
     "README.md"
   ],
@@ -17,6 +19,11 @@
     "memory",
     "state"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "engines": {
     "dsh": ">=0.2.1-0"
   },

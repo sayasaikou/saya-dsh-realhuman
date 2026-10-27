@@ -8,15 +8,32 @@
 
 ## 装
 
+在 profile 目录里跑两条：
+
 ```
 dsh plugin --profile <profile> add realheart
+node node_modules/realheart/setup.mjs
 ```
 
-装完重启 dsh。插件自己会：
+然后重启 dsh。
+
+**为什么非要有第二条**：`dsh plugin` 只是个 pnpm 转发器（它自己的 `--help` 就这么写），
+装完**不会**把包名加进 profile 的 `dsh.profile.bundles`。不在那个列表里，
+插件自带的 `cordis.patch.yml` 就不生效 —— 表现是「装了、没报错、一点反应也没有」。
+这个坑第一次就踩到了（实测）。
+
+试过用 `postinstall` 自动做这一步：pnpm 默认拦 build script（`ERR_PNPM_IGNORED_BUILDS`），
+而且会让 `add` 直接报错 —— 比不做还糟，所以去掉了。
+
+装完插件自己会：
 
 - 把运行时铺到 `$DSH_HOME/realheart/runtime/`
 - 生成 `config.json`（口令随机 48 位，权限 600）
 - 起观测页，地址打在日志里（`观测页：http://127.0.0.1:8098/<口令>/`）
+- 第一次启动时把三条前提打印一遍（只打一次，标记在 `stateDir/.announced`）
+
+**停观测页**：`kill "$(cat $DSH_HOME/realheart/rh-status.pid)"`
+（pid 是插件写的；文件不在就是没在跑。插件卸载时也会自己停一次。）
 
 默认只绑 `127.0.0.1`。手机要看自己改 `config.json` 的 `bind` 或走反代 ——
 **这个页面是明文 HTTP，别直接开公网做写操作**。
@@ -224,6 +241,7 @@ python3 rh_index.py --events 8      # 时间线尾部
 python3 probe_sess.py               # 会话包结构变了时看这个
 sudo systemctl restart rh-status && curl -s -o /dev/null -w '%{time_total}' localhost:8098/<secret>/
 ```
+
 
 
 

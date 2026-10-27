@@ -22,6 +22,7 @@
 import Schema from '@deepseek-ai/schemastery';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import net from 'node:net';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod } from 'node:fs/promises';
@@ -178,6 +179,8 @@ const DEFAULTS = {
   servePage: true,
   pagePort: 8098,
   pageBind: '127.0.0.1',
+  // 首次运行提示只打一次（标记文件在 stateDir 下）
+  announceOnInstall: true,
 };
 
 export const Config = Schema.object({
@@ -191,6 +194,7 @@ export const Config = Schema.object({
   servePage: Schema.boolean().default(DEFAULTS.servePage),
   pagePort: Schema.number().default(DEFAULTS.pagePort),
   pageBind: Schema.string().default(DEFAULTS.pageBind),
+  announceOnInstall: Schema.boolean().default(DEFAULTS.announceOnInstall),
 });
 
 export function apply(ctx, config = {}) {
@@ -418,6 +422,53 @@ export function apply(ctx, config = {}) {
    *
    * 不做的：不开公网端口。默认绑 127.0.0.1，手机要看自己反代或改 pageBind。
    */
+  /** 端口上有没有东西在听。用来区分“我们的服务没起”和“别人占了这个端口”。 */
+  function portBusy(port) {
+    return new Promise((resolve) => {
+      const sock = net.connect({ host: '127.0.0.1', port });
+      const done = (v) => {
+        try { sock.destroy(); } catch { /* 已断 */ }
+        resolve(v);
+      };
+      sock.once('connect', () => done(true));
+      sock.once('error', () => done(false));
+      sock.setTimeout(1200, () => done(false));
+    });
+  }
+
+  /**
+   * 停掉观测页。
+   *
+   * 为什么必须有这个：页面是 detached 起的，插件卸载 / 禁用它不会自己死。
+   * 没这个，用户装了又不想用，就只能自己 ps 一遍杀进程。
+   *
+   * 杀之前先认一遍命令行 —— PID 会回收，杀错别的东西比不杀更糟。
+   */
+  async function stopPage() {
+    const pidPath = join(DSH_HOME, 'realheart', 'rh-status.pid');
+    let pid = 0;
+    try {
+      pid = Number(String(await readFile(pidPath, 'utf8')).trim());
+    } catch {
+      return '没有 pid 文件，可能本来就没起';
+    }
+    if (!Number.isInteger(pid) || pid <= 0) return 'pid 文件是坏的';
+
+    // 只杀确实跑着 rh-status.py 的那个
+    try {
+      const cmdline = String(await readFile(`/proc/${pid}/cmdline`, 'utf8'));
+      if (!cmdline.includes('rh-status.py')) return `PID ${pid} 现在不是观测页，不动它`;
+    } catch {
+      return `PID ${pid} 已经不在了`;
+    }
+
+    try {
+      process.kill(pid, 'SIGTERM');
+      return `已停（PID ${pid}）`;
+    } catch (err) {
+      return `停不了 PID ${pid}：${err?.message ?? err}`;
+    }
+  }
   async function ensureRuntime() {
     if (cfg.servePage === false) return '';
     const dir = join(DSH_HOME, 'realheart', 'runtime');
@@ -474,11 +525,17 @@ export function apply(ctx, config = {}) {
     }
 
     if (!alive) {
+      // 端口上已经有别的东西在听 —— 那是冲突，不是“我们的服务没起”
+      if (await portBusy(cfg.pagePort)) {
+        return `端口 ${cfg.pagePort} 已被别的程序占用（不是 realheart），换个端口：改配置里的 pagePort`;
+      }
       try {
         const child = spawn('python3', [join(dir, 'rh-status.py')], {
           cwd: dir, detached: true, stdio: 'ignore',
         });
         child.unref();
+        // 记下 PID：卸载 / 禁用的时候要能把它停下来
+        await writeFile(join(DSH_HOME, 'realheart', 'rh-status.pid'), String(child.pid), 'utf8');
       } catch (err) {
         return `起观测页失败（python3 在不在？）：${err?.message ?? err}`;
       }
@@ -486,6 +543,50 @@ export function apply(ctx, config = {}) {
 
     return `http://127.0.0.1:${cfg.pagePort}/${secret}/`;
   }
+  /**
+   * 首次运行的三条前提 —— 只打一次。
+   *
+   * 为什么不只写在 README：装了插件的人不会去看 README，
+   * 而这三条直接影响“用了之后什么感觉”，得让他当场知道。
+   */
+  async function announceOnce(pageUrl) {
+    if (cfg.announceOnInstall === false) return;
+    const mark = join(cfg.stateDir, '.announced');
+    if (existsSync(mark)) return;
+
+    const text = [
+      '',
+      '────────────────────────────────────────────────────────',
+      'realheart 装好了。三件事先说清，只这一次：',
+      '',
+      '  1. 默认假设模型不在审查里（破甲）。不破也能用，效果会差一截 —— 自己选。',
+      '  2. 费 token。每轮多几十到几百字，换来的是“她不是每次醒来都失忆”。',
+      '  3. 依附别人的东西：DSH 本体、通道插件、zstd。它们一变，这里可能得跟着改。',
+      '',
+      `  观测页：${pageUrl || '（没起来，看上面的错误）'}`,
+      '  停观测页：kill "$(cat $DSH_HOME/realheart/rh-status.pid)"',
+      '────────────────────────────────────────────────────────',
+      '',
+    ].join('\n');
+
+    try {
+      console.log(text);
+    } catch {
+      /* 控制台不在就算了 */
+    }
+    log('首次安装提示已打印');
+    try {
+      await writeFile(mark, new Date().toISOString(), 'utf8');
+    } catch {
+      /* 标记写不了就每次打，不致命 */
+    }
+  }
+
+  // 插件卸载或禁用时把观测页停掉。不停的话它会一直占着端口 ——
+  // detached 出去的进程不会跟着插件一起死。
+  ctx.on('dispose', () => {
+    void stopPage().then((r) => log(`插件卸载，观测页：${r}`));
+  });
   (async () => {
     try {
       await mkdir(cfg.stateDir, { recursive: true });
@@ -496,6 +597,7 @@ export function apply(ctx, config = {}) {
     const pageUrl = await ensureRuntime();
     if (pageUrl.startsWith('http')) log(`观测页：${pageUrl}`);
     else if (pageUrl) log(`观测页没起来（${pageUrl}）`, 'error');
+    await announceOnce(pageUrl.startsWith('http') ? pageUrl : '');
 
     const tools = await waitForTools(ctx);
     if (!tools) {
@@ -685,6 +787,9 @@ export function apply(ctx, config = {}) {
     log(`rh_mood / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
   })();
 }
+
+
+
 
 
 
