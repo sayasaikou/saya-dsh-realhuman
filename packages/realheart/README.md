@@ -61,6 +61,47 @@ python3 -V && zstd --version
 
 （没有 zstd：`apt install zstd` / `pacman -S zstd` / `brew install zstd`）
 
+## 云端部署（在一台只会撞的机器上踩出来的）
+
+这一节不是通用建议，是真撞出来的，下一台大概率还会撞。
+
+### `dsh plugin add` 在某些 profile 上跑不通
+
+如果 profile 的依赖树里有**本地包**（比如 `dsh-napcat` 这种不在公网 npm 上的），
+`dsh plugin add file:...` 会失败：
+
+```
+GET https://registry.npmjs.org/dsh-napcat: Not Found - 404
+dsh-napcat is not in the npm registry, or you have no permission to fetch it.
+No authorization header was set for the request.
+```
+
+**最后那句是假象。** 不是认证问题 —— 是 pnpm 重新解析整棵依赖树时撞上了那个本地包。
+照“认证”方向查会白查半小时（实测）。
+
+这种机器上改用：
+
+```
+cp -a <包目录> ~/.dsh/profiles/<profile>/node_modules/realheart
+cd ~/.dsh/profiles/<profile> && node node_modules/realheart/setup.mjs
+```
+
+**代价**：包不在 `dependencies` 里。**以后别在这个 profile 跑 `pnpm install`** ——
+会把它删掉，而 `bundles` 里还挂着它，启动时报一个看不懂的错。
+
+### 换掉一个正在跑的东西：先起新的，再停旧的
+
+第一次换的时候顺序反了：脚本第一步就把旧的观测页 `disable --now` 停了，
+第二步装包才失败 —— **页面空了四分钟**。
+
+正确的顺序：新的装成、验过，再停旧的。旧的多跑几分钟没有代价；
+停下来才发现新的不行，代价是那几分钟的空窗。
+
+### 口令不进聊天
+
+观测页的地址里带着 secret。**别把它贴进 QQ、issue、截图里** ——
+那等于把口令写进聊天记录，和“口令不进日志”是同一个道理。
+要看页面的人自己从 `$DSH_HOME/realheart/runtime/config.json` 取。
 ## 从手工版换过来（带退路）
 
 如果之前是手工铺的（`realheart-core`），换之前**先备份**：
@@ -320,6 +361,7 @@ python3 rh_index.py --events 8      # 时间线尾部
 python3 probe_sess.py               # 会话包结构变了时看这个
 sudo systemctl restart rh-status && curl -s -o /dev/null -w '%{time_total}' localhost:8098/<secret>/
 ```
+
 
 
 
