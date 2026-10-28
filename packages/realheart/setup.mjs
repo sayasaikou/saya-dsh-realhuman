@@ -17,6 +17,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const PKG = 'realheart';
 
@@ -54,3 +55,27 @@ if (data.dsh.profile.bundles.includes(PKG)) {
 }
 
 console.log('[realheart] 重启 dsh 生效。装好之后第一次启动会打印三条前提，只打一次。');
+
+// ── 依赖自检（2026-10-28 加）──
+//
+// 为什么放进装配脚本，而不是只写在 README 里：
+// 缺 zstd 的后果是**静默的** —— 页面照常开、心情照常记，只有「他说的话」那一路永远空着。
+// 这种事不能靠人记得去查文档，得在装的那一刻当面说出来。
+// 缺了不挡安装：插件本体（工具 + 注入）不依赖这两样。
+function has(cmd, args) {
+  try {
+    execFileSync(cmd, args, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const py = has('python3', ['-V']);
+const zstd = has('zstd', ['--version']);
+console.log(`[realheart] 依赖自检：python3 ${py ? '有' : '缺'} · zstd ${zstd ? '有' : '缺'}`);
+if (!py) console.log('[realheart]   没有 python3 ⇒ 观测页起不来（她自己的工具和每轮注入照常工作）');
+if (!zstd) {
+  console.log('[realheart]   没有 zstd ⇒ 观测页里「他说的话」那一路全空。');
+  console.log('[realheart]   注意这个是静默的：页面照常显示、不报错。装：apt install zstd / pacman -S zstd / brew install zstd');
+}
