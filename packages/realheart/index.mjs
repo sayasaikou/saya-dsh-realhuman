@@ -29,6 +29,14 @@ import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open 
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { promisify } from 'node:util';
+import {
+  fingerprint as pendingFp,
+  applyEvent as pendingApply,
+  replay as pendingReplay,
+  render as pendingRender,
+  unfinishedCount as pendingUnfinished,
+  summaryText as pendingSummary,
+} from './lib/pending.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -223,6 +231,54 @@ export function apply(ctx, config = {}) {
 
   const moodFile = () => join(cfg.stateDir, 'mood.jsonl');
 
+  // ── pending 账本（2026-10-28 加）──
+  //
+  // 事件流水是唯一真相源，pending.md 是它的渲染。每次改完都从流水回放一遍、
+  // 与磁盘逐行比对；对不上就不覆盖，把差异写进日志 —— 宁可这份文件停在上一次，
+  // 也不要让它和流水悄悄分家。
+  const pendingFile = () => join(cfg.stateDir, 'pending.md');
+  const pendingLog = () => join(cfg.stateDir, 'pending.jsonl');
+
+  async function readPendingEvents() {
+    try {
+      const text = await readFile(pendingLog(), 'utf8');
+      const out = [];
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          out.push(JSON.parse(line));
+        } catch {
+          /* 坏行跳过，不拿它当数据 */
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  /** 写一条事件 → 重放 → 渲染 → 回放校验 → 落盘。返回 { ok, state, error } */
+  async function commitPendingEvent(ev) {
+    const events = await readPendingEvents();
+    const next = pendingApply(pendingReplay(events), ev);
+    if (!next) return { ok: false, error: '这条事件没通过校验（动作非法 / 引用找不到 / 重复）' };
+    const withNew = [...events, ev];
+    const replayState = pendingReplay(withNew);
+    const text = pendingRender(replayState);
+    if (pendingRender(next) !== text) {
+      return { ok: false, error: '回放结果与本次状态不一致，已放弃这次写入' };
+    }
+    try {
+      await appendFile(pendingLog(), `${JSON.stringify(ev)}\n`, 'utf8');
+      await writeFile(pendingFile(), text, 'utf8');
+      const back = await readFile(pendingFile(), 'utf8');
+      if (back !== text) return { ok: false, error: '落盘后回读不一致' };
+    } catch (err) {
+      return { ok: false, error: `写不进 pending 账本：${err?.message ?? err}` };
+    }
+    return { ok: true, state: replayState };
+  }
+
   let cache = { at: 0, ids: new Set(), note: '' };
   let building = null;
 
@@ -370,6 +426,7 @@ export function apply(ctx, config = {}) {
     const level = Number(last.level);
     const decay = String(last.decay || '').trim();
     const why = String(last.why_ref || '').trim();
+    const whyKind = String(last.why_kind || 'ref');
 
     let hours = null;
     const t = Date.parse(String(last.at || ''));
@@ -385,7 +442,9 @@ export function apply(ctx, config = {}) {
       lines.push(`${feeling}${lv}`);
       if (decay) lines.push(`大概什么时候淡：${decay}`);
     }
-    if (why) lines.push(`来处：${why}`);
+    // 来处不进注入的情形：她当时明确记了「说不清」（why_kind = none）。
+    // 这类记录是合法的心情，但不能当成因用 —— 注进来就等于把「没有原因」说成一个原因。
+    if (why && whyKind !== 'none') lines.push(`来处：${why}`);
     lines.push('这是调子，不是台词。浓的时候压不住，淡了就不算数。'
       + '变了就调 rh_mood 记一笔（必须指一件事），没变就别写。');
     return lines.join('\n');
@@ -402,6 +461,13 @@ export function apply(ctx, config = {}) {
         if (mood) parts.push({ name: 'realheart:mood', order: 900, text: mood });
         const pending = await pendingChangeText();
         if (pending) parts.push({ name: 'realheart:pending-change', order: 901, text: pending });
+        try {
+          const pev = await readPendingEvents();
+          const ptext = pendingSummary(pendingReplay(pev), pev);
+          if (ptext) parts.push({ name: 'realheart:pending', order: 902, text: ptext });
+        } catch {
+          /* 没完的事这一段注入失败，就少一段；不挡这一轮说话 */
+        }
         if (!parts.length) return assembled;
         const sections = Array.isArray(assembled?.sections) ? assembled.sections : [];
         const payload = parts.map((x) => `--- ${x.name} ---\n${x.text}`).join('\n\n');
@@ -886,14 +952,44 @@ export function apply(ctx, config = {}) {
           };
         }
 
-        const idx = await indexIds();
-        const hit = found.find((id) => idx.ids.has(id));
-        if (!hit) {
-          return {
-            text: `（没记。索引里找不到 ${found[0]}。）\n`
-              + `索引现有 ${idx.ids.size} 条事件（${idx.note}）。\n`
-              + '要么 id 写错了，要么那件事根本没发生过。',
-          };
+        // none:<枚举> —— 说得清、但指不出一件事的那类，合法（2026-10-28 加）。
+        // 枚举写死：不接受自由文本，免得它退化成一句敷衍。
+        // 这类记录不进「有成因」统计，来处也不进注入。
+        const NONE_ENUM = ['unexplained', 'body', 'weather', 'sleep', 'unknown'];
+        const noneMatch = /^none:([a-z_]+)$/i.exec(whyRef);
+        let whyKind = 'ref';
+        let whyEnum = null;
+        let hit = null;
+
+        if (noneMatch) {
+          const val = noneMatch[1].toLowerCase();
+          if (!NONE_ENUM.includes(val)) {
+            return {
+              text: `（没记。none: 后面只能接这几个：${NONE_ENUM.join(' / ')}。）\n`
+                + '这一栏是留给「说不清」的，不是给随手写的。',
+            };
+          }
+          whyKind = 'none';
+          whyEnum = val;
+        } else {
+          if (found.length === 0) {
+            return {
+              text: '（没记。why_ref 里没有事件 id。）\n'
+                + '心情必须有来处。去观测页的时间线上找一个 id（鼠标悬停能看到），'
+                + '或者直接说清是因为哪句话、哪件事——但那个“哪件事”得能指到一个具体记录上。\n'
+                + '真说不清就写 none:unexplained（还有 body / weather / sleep / unknown）。',
+            };
+          }
+
+          const idx = await indexIds();
+          hit = found.find((id) => idx.ids.has(id));
+          if (!hit) {
+            return {
+              text: `（没记。索引里找不到 ${found[0]}。）\n`
+                + `索引现有 ${idx.ids.size} 条事件（${idx.note}）。\n`
+                + '要么 id 写错了，要么那件事根本没发生过。',
+            };
+          }
         }
 
         const row = {
@@ -901,6 +997,8 @@ export function apply(ctx, config = {}) {
           feeling,
           level,
           why_ref: hit,
+          why_kind: whyKind,
+          why_enum: whyEnum,
           decay: decay || null,
         };
 
@@ -910,7 +1008,119 @@ export function apply(ctx, config = {}) {
           return { text: `（写不进帐本：${err?.message ?? err}）` };
         }
 
-        return { text: `记下了：${feeling}（${level}/10），因为 ${hit}。` };
+        return {
+          text: whyKind === 'none'
+            ? `记下了：${feeling}（${level}/10）。来处记作「说不清」（${whyEnum}），不算成因。`
+            : `记下了：${feeling}（${level}/10），因为 ${hit}。`,
+        };
+      },
+    });
+
+    // ── 没完的事（pending 账本）
+    //
+    // 为什么要有这个工具：文件（pending.md）是给她和人看的，账要靠事件流水。
+    // 「真做了」必须由流水佐证 —— 勾一下不等于做了，所以 check 可以不带佐证，
+    // 但不带的勾记成 claimed_done，永远不进续接率。这条是她定的。
+    tools.register({
+      name: 'rh_pending',
+      description: [
+        '没完的事：加一条、勾掉、或者删掉。',
+        '',
+        '`add`：记一件还没做完的事。同一句话不会重复进队。',
+        '`check`：勾掉。**最好带 evidence** —— 一个事件 id（n:/a:/h: 那种），',
+        '         或者说明凭什么算做完了。不带也能勾，但会记成「只有自述」，',
+        '         以后算续接率时不计入。',
+        '`drop`：不作数了，直接删。',
+        '`list`：看现在有什么。',
+        '',
+        '引用一条用它的指纹前几位，或者行号。指纹在 list 里能看到。',
+      ].join('\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', description: 'add / check / drop / list' },
+          text: { type: 'string', description: 'add 时要写的事，一句话' },
+          ref: { type: 'string', description: 'check / drop 时指哪一条：指纹前几位，或行号' },
+          evidence: { type: 'string', description: '凭什么算做完了：事件 id，或一句能被核的说明' },
+          at_unknown: { type: 'boolean', description: 'add 时用：这是存量条目，起点不明' },
+          turn: { type: 'integer', description: '第几轮。只在算续接率时用，可以不给' },
+          session: { type: 'string', description: '哪个会话。可以不给' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text'],
+          additionalProperties: false,
+        },
+        render: (_args, value) => [{ type: 'text', text: value.text }],
+      },
+
+      async execute(args) {
+        const action = String(args?.action ?? '').trim();
+        const events = await readPendingEvents();
+        const state = pendingReplay(events);
+
+        if (action === 'list') {
+          if (!state.items.length) return { text: '（没完的事：空着。）' };
+          const rows = state.items.map((it, i) => {
+            const mark = it.checked_at ? '[x]' : '[ ]';
+            const claim = it.claimed_done ? '（只有自述）' : '';
+            return `${i + 1}. ${mark} ${it.text}  ${it.fp}${claim}`;
+          });
+          return {
+            text: `没完的事 ${pendingUnfinished(state)} 条 / 共 ${state.items.length} 条\n`
+              + rows.join('\n'),
+          };
+        }
+
+        if (action === 'add') {
+          const text = String(args?.text ?? '').trim();
+          if (!text) return { text: '（add 要写 text。）' };
+          const fp = pendingFp(text);
+          const ev = {
+            action: 'add',
+            text,
+            fp,
+            at: localStamp(),
+            at_unknown: args?.at_unknown === true,
+            turn: Number.isInteger(args?.turn) ? args.turn : null,
+            session: args?.session ? String(args.session) : null,
+          };
+          const r = await commitPendingEvent(ev);
+          if (!r.ok) return { text: `（没记：${r.error}）` };
+          return { text: `记下了：${text}  （${fp}）` };
+        }
+
+        if (action === 'check' || action === 'drop') {
+          const ref = String(args?.ref ?? '').trim();
+          if (!ref) return { text: `（${action} 要用 ref 指一条。）` };
+          const target = state.items.find((it) => it.fp === ref || it.fp.startsWith(ref));
+          if (!target) return { text: `（找不到 ${ref}。先 list 看一眼。）` };
+          const evidence = String(args?.evidence ?? '').trim();
+          const ev = {
+            action,
+            fp: target.fp,
+            ref: target.fp,
+            at: localStamp(),
+            turn: Number.isInteger(args?.turn) ? args.turn : null,
+            session: args?.session ? String(args.session) : null,
+            ...(evidence ? { evidence } : {}),
+          };
+          const r = await commitPendingEvent(ev);
+          if (!r.ok) return { text: `（没改成：${r.error}）` };
+          if (action === 'drop') return { text: `删了：${target.text}` };
+          return {
+            text: evidence
+              ? `勾掉了：${target.text}（凭 ${evidence}）`
+              : `勾掉了：${target.text}（没给佐证，记成「只有自述」，不算进续接率）`,
+          };
+        }
+
+        return { text: '（action 只有 add / check / drop / list。）' };
       },
     });
 
@@ -933,7 +1143,7 @@ export function apply(ctx, config = {}) {
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', description: 'pause 或 resume' },
+          action: { type: 'string', description: 'pause / resume / clear（clear＝我好了，记成 declared_clear）' },
           reason: { type: 'string', description: '为什么。可以不写，但你自己以后翻记录时会想知道。' },
         },
         required: ['action'],
@@ -950,10 +1160,35 @@ export function apply(ctx, config = {}) {
       },
       async execute(args) {
         const action = String(args?.action ?? '').trim();
-        if (action !== 'pause' && action !== 'resume') {
-          return { text: '（action 只有 pause 和 resume 两个值。）' };
+        if (!['pause', 'resume', 'clear'].includes(action)) {
+          return { text: '（action 只有 pause / resume / clear 三个值。）' };
         }
         const reason = String(args?.reason ?? '').trim();
+
+        // clear = 「我说我好了」。这是 declared_clear，不是 decayed —— 两个计数必须分开，
+        // 否则半衰期永远算不对（2026-10-28 定）。它只把「可观测时刻」从 0 变成 1。
+        if (action === 'clear') {
+          let target = '';
+          try {
+            const rows = await readMood();
+            const last = rows[rows.length - 1];
+            target = String(last?.at || '');
+          } catch {
+            /* 没有心情账本也允许她声明 */
+          }
+          try {
+            await appendFile(join(cfg.stateDir, 'control.jsonl'),
+              `${JSON.stringify({ at: localStamp(), action: 'declared_clear', target, reason, by: 'her' })}\n`,
+              'utf8');
+          } catch (err) {
+            return { text: `（没写进去：${err?.message ?? err}）` };
+          }
+          return {
+            text: '记下了：这一条算「你说你好了」。'
+              + '它不是自己淡掉的（decayed），两个数将来分开算，别混。',
+          };
+        }
+
         try {
           await appendFile(join(cfg.stateDir, 'control.jsonl'),
             `${JSON.stringify({ at: localStamp(), action, reason, by: 'her' })}\n`, 'utf8');
@@ -1001,7 +1236,7 @@ export function apply(ctx, config = {}) {
     });
 
     const idx = await indexIds();
-    log(`rh_mood / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
+    log(`rh_mood / rh_pending / rh_control / rh_changes 已注册；事件索引 ${idx.ids.size} 条（${idx.note}）`);
   })();
 }
 
