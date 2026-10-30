@@ -1,0 +1,6 @@
+# 这个仓里的东西有一半跑在 Linux 上（scripts/*.sh、runtime/*.py）。
+# 一旦 checkout 成 CRLF，sh 会报「bad interpreter: /bin/sh^M」——
+# 而那台机器上的人想不到是换行符的问题。
+#
+# 所以：全部按 LF 存。Windows 上的编辑器也照这个来。
+* text=auto eol=lf
