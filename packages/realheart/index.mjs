@@ -180,6 +180,25 @@ export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...config };
   if (cfg.enabled === false) return;
 
+  // ── 总开关（P-3 kill switch）──
+  // 有这个文件就当整个插件不存在：不注入、不记账、四个工具都不注册。
+  //
+  // 为什么用哨兵文件而不是改配置：改配置要么写 profile 的 YAML（热改会整份重挂，
+  // 正在说话的会话会被打断，这条撞过三次），要么依赖宿主把配置传进来 ——
+  // 而「一条命令全停」这件事不该依赖任何一层能不能正确传递。
+  // 建一个文件是所有人都会的操作，也是崩溃之后唯一还站得住的操作。
+  const killSwitch = join(DSH_HOME, 'realheart', 'DISABLED');
+  if (existsSync(killSwitch)) {
+    try {
+      const msg = `[realheart] 已被总开关停用（${killSwitch} 存在）：不注入、不记账、工具未注册。`;
+      if (typeof ctx.logger?.info === 'function') ctx.logger.info(msg);
+      else console.log(msg);
+    } catch {
+      /* 连日志都打不出去，那就什么都不说 —— 反正它确实什么都没做 */
+    }
+    return;
+  }
+
   // ── 启动前校验 ──
   // 带着错配置跑，坏的不只是那一处：端口被占会让人以为「页面挂了」，
   // 相对路径会让账本写到一个谁也找不到的地方。所以宁可拒绝启动。

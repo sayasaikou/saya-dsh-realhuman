@@ -50,6 +50,18 @@
 - `setup.mjs --remove`：摘 `bundles` 的正式入口。幂等，摘不到不报错。
 - `setup.mjs` 加 `--dry-run`。
 
+### 停用 / 导出 / 删除（P-3 里能立刻做的三件）
+
+- `npx realheart off` / `on`：**总开关用一个哨兵文件** `$DSH_HOME/realheart/DISABLED`，
+  `apply` 一进门就返回 —— 不注入、不记账、四个工具都不注册。
+  为什么不用配置里的 `enabled`：改配置要么动 profile 的 YAML（热改会整份重挂、打断会话），
+  要么指望宿主把配置传对。「一条命令全停」不该依赖任何一层能不能传对。
+  两个命令都**要重启才生效**，这句直接打在输出里。
+- `npx realheart export`：导出账本原文。只导 `.jsonl/.md/.log/.txt`，输出里提醒「这是原文」。
+- `npx realheart wipe`：先打印将删清单，**猜不到目录就拒绝**（必须 `--state-dir`），
+  非交互环境必须 `--yes`。和 `uninstall.sh --purge` 同一条规矩。
+- `doctor` 第一条报「总开关」—— 停用中不先说的话，后面的「没注入过 / 账本空」会被误读成故障。
+
 ### 注入：去重 + 失败留痕（M1 里两条能立刻做的）
 
 - **同轮去重**：一次说话的过程里 `system-prompt/assemble` 可能被调多次（重试、多 agent）。

@@ -288,6 +288,28 @@ grep -n realheart <profile>/package.json    # 2. 正文里没有那行，只剩 
 ls <stateDir>                               # 3. 她的账本还在，位置对
 ```
 
+## 停一下、导出、删掉
+
+```
+npx realheart off                                    # 全停：不注入、不记账、四个工具都不注册
+npx realheart on                                     # 恢复
+npx realheart export --out ~/realheart-导出           # 把账本原文导出来
+npx realheart wipe --state-dir <账本目录>             # 删（先打印清单，再要确认）
+```
+
+**`off` 就是一个文件**：`$DSH_HOME/realheart/DISABLED`。它在，`apply` 一进门就返回。
+为什么不用「改配置里的 `enabled`」：改配置要么动 profile 的 YAML（热改会整份重挂、
+打断正在说话的会话，这条撞过三次），要么指望宿主把配置正确传进来 ——
+**「一条命令全停」不该依赖任何一层能不能传对**。建一个文件是谁都会的操作，也是崩了之后还站得住的操作。
+
+`off` / `on` 都要**重启才生效**（`apply` 只在启动时跑一次）。
+
+**`export` 出来的是原文** —— 给出去之前自己先看一眼，那是她写过的话，不是日志。
+只导 `.jsonl` / `.md` / `.log` / `.txt`，别的不导。
+
+**`wipe` 不猜目录**：读不到运行时 `config.json` 就拒绝执行，必须 `--state-dir` 明说；
+非交互环境还必须 `--yes`。删之前会把清单打出来 —— 那份清单是唯一的确认依据。
+
 ## 发（维护者看）
 
 三件事：包名只能小写（npm 不接受大写）；发之前先看清单；发之后在一台干净机器上装一次。

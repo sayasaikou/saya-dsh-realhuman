@@ -190,6 +190,21 @@ test('注入从没少过段就说 ok（不留言又不报错，两样都不行�
   }
 });
 
+test('总开关开着时第一条就说清「被停用中」（不然后面那些空账本会被当成故障）', async () => {
+  const h = await makeHome();
+  await mkdir(join(h.home, 'realheart'), { recursive: true });
+  await writeFile(join(h.home, 'realheart', 'DISABLED'), 'x\n');
+  try {
+    const r = await runDoctor({ dshHome: h.home });
+    const item = pick(r, '总开关');
+    assert.equal(item.level, 'warn');
+    assert.match(item.fix, /realheart on/);
+    assert.equal(r.items[0].title, '总开关', '总开关那项要排在第一条');
+  } finally {
+    await rm(h.home, { recursive: true, force: true });
+  }
+});
+
 test('每条不是 ok 的项都得带「怎么修」', async () => {
   const home = await mkdtemp(join(tmpdir(), 'rh-doc-fix-'));
   try {

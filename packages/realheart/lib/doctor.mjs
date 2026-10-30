@@ -88,6 +88,14 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
   const pageBind = rt?.bind ?? DEFAULTS.pageBind;
   const secret = rt?.secret || '';
 
+  // ── 0. 总开关 ──
+  // 停用状态要第一条就看见 —— 不然下面那些「没有注入过 / 工具没注册」会被误读成故障。
+  const killSwitch = join(dshHome, 'realheart', 'DISABLED');
+  if (existsSync(killSwitch)) {
+    add('warn', '总开关', '被停用中（DISABLED 文件在）：不注入、不记账、工具未注册',
+      `要恢复：npx realheart on（或删掉 ${killSwitch}），然后重启 dsh。下面是停用前留下的状态`);
+  }
+
   // ── 1. 依赖 ──
   const py = await cmdOk('python3', ['-V']);
   const zstd = await cmdOk('zstd', ['--version']);

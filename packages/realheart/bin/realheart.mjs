@@ -14,7 +14,8 @@
  *   - 加 bundles / 备份：调 setup.mjs（唯一知道包名和格式的地方）
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readdir, copyFile, rm, stat } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -38,17 +39,26 @@ function usage() {
   console.log(`realheart —— 给她一个能记账的心情层
 
 用法：
-  npx ${PKG} install [--profile <名字|路径>] [--dry-run]
-  npx ${PKG} doctor
-  node node_modules/${PKG}/bin/${PKG}.mjs install --profile qqbot
+  npx ${PKG} install [--profile <名字|路径>] [--dry-run]   装上
+  npx ${PKG} doctor                                        自检：在不在工作 / 哪坏了 / 怎么修
+  npx ${PKG} off | on                                      总开关（停 / 恢复，都要重启才生效）
+  npx ${PKG} export [--state-dir <目录>] [--out <目录>]      把账本原文导出来
+  npx ${PKG} wipe   --state-dir <目录> [--yes]              删掉账本（要先给目录，再确认）
 
 选项：
-  --profile   装到哪个 profile。省掉就用当前目录（当前目录得正好是 profile）
-  --dry-run   只说要做什么，不动手
+  --profile    装到哪个 profile。省掉就用当前目录（当前目录得正好是 profile）
+  --dry-run    只说要做什么，不动手
+  --state-dir  账本目录。不给就试着从运行时 config.json 读；读不到时**不猜**，直接让你给
+  --out        导出的目标目录
+  --yes        非交互环境里表示「确实要删/要做」
 
-doctor：一条命令回答「在不在工作 / 哪坏了 / 怎么修」。只读，不改任何东西。
+几个规矩：
+  · 一个文件管全停：off 建 $DSH_HOME/realheart/DISABLED，apply 一看到它就不做任何事。
+    它比改配置可靠 —— 改配置要动 profile 的 YAML（热改会打断正在说话的会话）。
+  · export 出来的是**原文**，给出去之前自己先看一眼。
+  · wipe 不会猜目录，也不会不问就删。
 
-装完之后：重启 dsh。想卸：sh scripts/uninstall.sh --profile <名字>`);
+想卸整个插件：sh scripts/uninstall.sh --profile <名字> --dry-run 先看一眼。`);
 }
 
 async function doctor() {
@@ -184,21 +194,117 @@ function install(opts) {
   say('随时自检：npx realheart doctor');
 }
 
+// ── 总开关（P-3 kill switch）──
+//
+// 一个文件管全停。为什么不是「改配置里的 enabled」：改配置要么动 profile 的 YAML
+// （热改会整份重挂，正在说话的会话被打断），要么指望宿主把配置正确传进来。
+// 「一条命令全停」不该依赖任何一层能不能传对。
+const KILL = join(DSH_HOME, 'realheart', 'DISABLED');
+
+function switchOff() {
+  mkdirSync(dirname(KILL), { recursive: true });
+  writeFileSync(KILL, `${new Date().toISOString()} 由 realheart off 停用\n`, 'utf8');
+  say(`已停用：建了 ${KILL}`);
+  say('不注入、不记账、四个工具都不注册。');
+  say('⚠️ 重启 dsh 之后才生效（apply 只在启动时跑一次）—— 重启会打断正在说话的会话。');
+}
+
+function switchOn() {
+  if (!existsSync(KILL)) {
+    say('本来就是开着的（没有 DISABLED 文件）');
+    return;
+  }
+  unlinkSync(KILL);
+  say(`已恢复：删了 ${KILL}。同样要重启才生效。`);
+}
+
+/** 账本目录：只认运行时 config.json。不猜 —— 猜错会读/删别人的东西。 */
+async function resolveStateDir(opts) {
+  if (opts.stateDir) return opts.stateDir;
+  const cfgPath = join(DSH_HOME, 'realheart', 'runtime', 'config.json');
+  if (!existsSync(cfgPath)) return '';
+  try {
+    const c = JSON.parse(await readFileSync(cfgPath, 'utf8'));
+    return c.stateDir || '';
+  } catch {
+    return '';
+  }
+}
+
+const DATA_RE = /\.(jsonl|md|log|txt)$/;
+
+// ── 数据主权（P-3）──
+async function exportData(opts) {
+  const stateDir = await resolveStateDir(opts);
+  if (!stateDir || !existsSync(stateDir)) {
+    fail(`不知道账本在哪（既没给 --state-dir，运行时 config.json 里也没有）。\n  试用：npx realheart export --state-dir <账本目录> --out <目标目录>`);
+  }
+  const out = opts.out || join(process.cwd(), `realheart-export-${Date.now()}`);
+  mkdirSync(out, { recursive: true });
+  let n = 0;
+  for (const f of await readdir(stateDir)) {
+    if (!DATA_RE.test(f)) continue;
+    await copyFile(join(stateDir, f), join(out, f));
+    n += 1;
+  }
+  say(`导出 ${n} 个文件：${stateDir} → ${out}`);
+  say('里面是**原文**。给出去之前自己先看一眼 —— 那是她写过的话，不是日志。');
+}
+
+async function wipe(opts) {
+  const stateDir = await resolveStateDir(opts);
+  if (!stateDir) {
+    // 删账本这条路上不猜。和 uninstall.sh --purge 同一条规矩。
+    fail('不知道账本在哪，拒绝执行。明说：npx realheart wipe --state-dir <账本目录>');
+  }
+  if (!existsSync(stateDir)) {
+    say(`目录不存在（${stateDir}），没什么可删`);
+    return;
+  }
+  const files = await readdir(stateDir);
+  console.log(`[realheart] 将要删除 ${stateDir} 下的这些（这是唯一的确认依据）：`);
+  for (const f of files) {
+    let size = '?';
+    try {
+      size = `${(await stat(join(stateDir, f))).size} B`;
+    } catch {
+      /* 读不到就不报大小 */
+    }
+    console.log(`  ${f}  (${size})`);
+  }
+  say('删了就真没了 —— 里面是她的账本，不是缓存。');
+  if (!opts.yes) {
+    if (process.stdin.isTTY) fail('没确认，什么都没删。加 --yes 表示你确实要删');
+    fail('非交互环境，要真删必须加 --yes。什么都没删');
+  }
+  await rm(stateDir, { recursive: true, force: true });
+  say(`已删：${stateDir}`);
+}
+
 const argv = process.argv.slice(2);
-const opts = { profile: '', dryRun: false };
+const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false };
 const rest = [];
 for (let i = 0; i < argv.length; i += 1) {
   const a = argv[i];
   if (a === '--dry-run') opts.dryRun = true;
+  else if (a === '--yes') opts.yes = true;
   else if (a === '--profile') opts.profile = argv[++i] ?? '';
+  else if (a === '--state-dir') opts.stateDir = argv[++i] ?? '';
+  else if (a === '--out') opts.out = argv[++i] ?? '';
   else if (a === '-h' || a === '--help') { usage(); process.exit(0); }
   else if (a.startsWith('--profile=')) opts.profile = a.slice('--profile='.length);
+  else if (a.startsWith('--state-dir=')) opts.stateDir = a.slice('--state-dir='.length);
+  else if (a.startsWith('--out=')) opts.out = a.slice('--out='.length);
   else rest.push(a);
 }
 
 const cmd = rest[0] || 'install';
 if (cmd === 'install') install(opts);
 else if (cmd === 'doctor') doctor();
+else if (cmd === 'off') switchOff();
+else if (cmd === 'on') switchOn();
+else if (cmd === 'export') await exportData(opts);
+else if (cmd === 'wipe') await wipe(opts);
 else if (cmd === 'help') usage();
 else {
   console.error(`[realheart] 不认识这个子命令：${cmd}`);

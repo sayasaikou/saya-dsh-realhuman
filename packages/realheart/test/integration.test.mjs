@@ -138,6 +138,21 @@ test('同一份 assembly 只注入一次（重试 / 多 agent 不会把心情塞
   }
 });
 
+test('总开关在的时候，apply 什么都不做（工具不注册、监听不挂）', async () => {
+  const dir = join(HOME, 'realheart');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'DISABLED'), 'test\n');
+  try {
+    const h = makeCtx();
+    apply(h.ctx, { stateDir: join(HOME, 'ks-state'), servePage: false, freeTime: false });
+    await settle();
+    assert.equal(h.tools.size, 0, '停用了还注册了工具');
+    assert.equal(h.handlers.length, 0, '停用了还挂了监听');
+  } finally {
+    await rm(join(dir, 'DISABLED'), { force: true });
+  }
+});
+
 test('dispose 会挂上（不然热重载会漏监听器）', async () => {
   const h = await boot();
   try {
