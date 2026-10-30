@@ -20,6 +20,7 @@
  */
 
 import { Config, DEFAULTS, DSH_HOME, QQROOT, validateConfig } from './lib/config.mjs';
+import { maskSecret, pageHint, whereSecret } from './lib/secrets.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
@@ -109,12 +110,15 @@ async function collectIds(cfg) {
   try {
     let n = 0;
     let failed = 0;
+    let unreadable = 0;
     const groups = await readdir(cfg.sessionsRoot);
     for (const g of groups) {
       let names = [];
       try {
         names = await readdir(join(cfg.sessionsRoot, g));
       } catch {
+        // 组目录读不了 → 少一路数据。**必须有痕迹**：静默少一路是这套东西最坏的坏法
+        unreadable += 1;
         continue;
       }
       for (const sid of names) {
@@ -144,7 +148,7 @@ async function collectIds(cfg) {
         }
       }
     }
-    notes.push(`native ${n}${failed ? `（${failed} 个包解不开）` : ''}`);
+    notes.push(`native ${n}${failed ? `（${failed} 个包解不开）` : ''}${unreadable ? `（${unreadable} 个目录读不了）` : ''}`);
   } catch (err) {
     notes.push(`native 读不到（${err?.code ?? err?.message ?? err}）`);
   }
@@ -690,7 +694,8 @@ export function apply(ctx, config = {}) {
       '  2. 费 token。每轮多几十到几百字，换来的是“她不是每次醒来都失忆”。',
       '  3. 依附别人的东西：DSH 本体、通道插件、zstd。它们一变，这里可能得跟着改。',
       '',
-      `  观测页：${pageUrl || '（没起来，看上面的错误）'}`,
+      `  观测页：${pageUrl ? pageHint(cfg.pagePort) : '（没起来，看上面的错误）'}`,
+      `  ${whereSecret(join(DSH_HOME, 'realheart', 'runtime', 'config.json'))}`,
       '  停观测页：kill "$(cat $DSH_HOME/realheart/rh-status.pid)"',
       '────────────────────────────────────────────────────────',
       '',
@@ -860,9 +865,14 @@ export function apply(ctx, config = {}) {
     }
 
     const pageUrl = await ensureRuntime();
-    if (pageUrl.startsWith('http')) log(`观测页：${pageUrl}`);
-    else if (pageUrl) log(`观测页没起来（${pageUrl}）`, 'error');
-    await announceOnce(pageUrl.startsWith('http') ? pageUrl : (pageUrl ? ('启动失败：' + pageUrl) : ''));
+    // ⚠️ 地址里带着口令，而这一行会进日志。日志会被贴进 issue、聊天、截图 ——
+    //    所以打的是打码版，完整地址自己去 config.json 的 secret 拼。
+    if (pageUrl.startsWith('http')) {
+      log(`观测页：${pageHint(cfg.pagePort)}（${whereSecret(join(DSH_HOME, 'realheart', 'runtime', 'config.json'))}）`);
+    } else if (pageUrl) {
+      log(`观测页没起来（${maskSecret(pageUrl)}）`, 'error');
+    }
+    await announceOnce(pageUrl.startsWith('http') ? pageUrl : (pageUrl ? ('启动失败：' + maskSecret(pageUrl)) : ''));
 
     const tools = await waitForTools(ctx);
     if (!tools) {

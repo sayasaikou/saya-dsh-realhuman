@@ -136,6 +136,33 @@ test('没有运行时配置：不猜路径、不拿默认值冒充真实配置',
   }
 });
 
+test('错误日志里出现口令 → fail（打码只挡以后，挡不住以前漏过的）', async () => {
+  const h = await makeHome();
+  await writeFile(
+    join(h.home, 'realheart', 'rh-status.err.log'),
+    `观测页：http://127.0.0.1:8099/${SECRET}/\n`,
+  );
+  try {
+    const r = await runDoctor({ dshHome: h.home });
+    const item = pick(r, '口令泄漏');
+    assert.equal(item.level, 'fail');
+    assert.match(item.fix, /secret|换掉/);
+  } finally {
+    await rm(h.home, { recursive: true, force: true });
+  }
+});
+
+test('日志干净时说干净（不留言又不报错，两样都不行）', async () => {
+  const h = await makeHome();
+  await writeFile(join(h.home, 'realheart', 'rh-status.err.log'), '观测页：http://127.0.0.1:8099/<口令>/\n');
+  try {
+    const r = await runDoctor({ dshHome: h.home });
+    assert.equal(pick(r, '口令泄漏').level, 'ok');
+  } finally {
+    await rm(h.home, { recursive: true, force: true });
+  }
+});
+
 test('每条不是 ok 的项都得带「怎么修」', async () => {
   const home = await mkdtemp(join(tmpdir(), 'rh-doc-fix-'));
   try {

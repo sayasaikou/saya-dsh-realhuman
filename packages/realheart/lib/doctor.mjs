@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import net from 'node:net';
 import { join } from 'node:path';
 import { DSH_HOME, DEFAULTS, validateConfig } from './config.mjs';
+import { findSecretLeak } from './secrets.mjs';
 import { replay, matchesFile } from './pending.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -160,7 +161,30 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       ok ? '' : '改 pagePort 换一个端口，或者把占着它的进程停掉');
   }
 
-  // ── 6. 账本有没有坏行 ──
+  // ── 6. 口令有没有漏进日志 ──
+  // 这条能查，是因为「口令不进日志」现在是代码不是嘱咐（lib/secrets.mjs + 测试）。
+  // 但历史日志里可能已经漏过了 —— 改成打码只挡住以后，挡不住以前。
+  if (secret) {
+    const scanned = [];
+    for (const f of [join(rtDir, 'rh-status.err.log'), join(stateDir ?? '', 'last-inject.md')]) {
+      if (!stateDir || !existsSync(f)) continue;
+      try {
+        const hits = findSecretLeak(await readFile(f, 'utf8'), secret);
+        if (hits.length) scanned.push([f, hits.length]);
+      } catch {
+        /* 读不了就是没有证据，不当失败 */
+      }
+    }
+    if (scanned.length) {
+      const [f, n] = scanned[0];
+      add('fail', '口令泄漏', `${n} 处口令落进了 ${f}`,
+        '换掉口令：删 runtime/config.json 的 secret 字段再重启（会生成新的），然后把那份日志清掉。这个文件别贴出去');
+    } else {
+      add('ok', '口令泄漏', '错误日志与注入快照里没有口令');
+    }
+  }
+
+  // ── 7. 账本有没有坏行 ──
   // 走到这里还没有 stateDir，说明运行时配置根本不存在 —— 后面几项（账本、渲染、注入）
   // 都是「不知道该查哪个目录」。**不猜**：猜错会往别人家里建目录或者读别人的账本。
   if (!stateDir) {
@@ -180,7 +204,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     else add('ok', name, `${r.rows.length} 条，没有坏行`);
   }
 
-  // ── 7. 流水与渲染对不对得上 ──
+  // ── 8. 流水与渲染对不对得上 ──
   // 这是这套东西里唯一一处「文件是派生的」：pending.md 必须等于流水回放出来的样子。
   // 分家了它就一直在骗人，而且骗得很自然。
   if (!pend.missing) {
@@ -196,7 +220,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     }
   }
 
-  // ── 8. 今天注入成功过没有 ──
+  // ── 9. 今天注入成功过没有 ──
   const liPath = join(stateDir, 'last-inject.md');
   if (!existsSync(liPath)) {
     add('warn', '注入', '没有 last-inject.md', '说明这个插件还没在会话里跑过一轮，或者从不写盘');
