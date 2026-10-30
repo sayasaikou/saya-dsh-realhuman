@@ -15,13 +15,14 @@
  */
 
 import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
-import { readdir, copyFile, rm, stat, readFile } from 'node:fs/promises';
+import { readdir, copyFile, rm, stat, readFile, mkdir, appendFile } from 'node:fs/promises';
 import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { extractVersion, satisfies } from '../lib/version.mjs';
 import { renderForgetEntry, inventoryOf, appendForget } from '../lib/forget.mjs';
+import { loadUserConfig, DEFAULTS } from '../lib/config.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(HERE, '..');
@@ -203,6 +204,95 @@ function install(opts) {
 // 一个文件管全停。为什么不是「改配置里的 enabled」：改配置要么动 profile 的 YAML
 // （热改会整份重挂，正在说话的会话被打断），要么指望宿主把配置正确传进来。
 // 「一条命令全停」不该依赖任何一层能不能传对。
+/**
+ * 改她的心（P-3b）—— 整份配置里唯一一件「能被人直接写进去」的事，所以成本要高。
+ *
+ * 四道闸，缺一条都不干：
+ *   ① `allowManualMoodOverride` 必须是 true（默认关，关着时这条命令等于不存在）；
+ *   ② 四个参数缺一不可，其中 `--i-know-this-is-not-her-feeling` 是那句确认；
+ *   ③ 一周最多 N 次（默认 3），超了就拒绝；
+ *   ④ 写进去的记录带 `why_kind: 'manual'`，**注入里会标明「这条是被改写的，不是她自己的」**。
+ *
+ * 第④条是整条设计的核心。不标明的话，这份账就变成「谁写进去的都算她的」——
+ * 那还不如不做。
+ */
+async function moodOverride(opts) {
+  const user = loadUserConfig(DSH_HOME);
+  const cfg = { ...DEFAULTS, ...user.config };
+  if (cfg.allowManualMoodOverride !== true) {
+    // 关着的时候不提示怎么开 —— 不然等于给了入口。要说也只说「不知道这条命令」。
+    fail('不认识的子命令：mood-override');
+  }
+  const need = [
+    ['feeling', '--feeling "<几个字，她的语气>"'],
+    ['level', '--level <1-10>'],
+    ['why', '--why "<为什么改，会写进账本>"'],
+    ['ack', '--i-know-this-is-not-her-feeling'],
+  ];
+  const missing = need.filter(([k]) => !opts[k]).map(([, hint]) => hint);
+  if (missing.length) {
+    fail(`缺参数，什么都没写：\n  ${missing.join('\n  ')}`);
+  }
+  const level = Number(opts.level);
+  if (!Number.isInteger(level) || level < 1 || level > 10) fail('--level 要 1–10 的整数');
+  const stateDir = await resolveStateDir(opts);
+  if (!stateDir) fail('不知道账本在哪，拒绝写入（不给 --state-dir 就读运行时 config.json，读不到不猜）');
+
+  const moodPath = join(stateDir, 'mood.jsonl');
+  // 数一周内的次数 —— 限额是这条通道「不能随便乱改」的那一半
+  let recent = 0;
+  if (existsSync(moodPath)) {
+    for (const line of (await readFile(moodPath, 'utf8')).split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const r = JSON.parse(t);
+        if (r?.why_kind !== 'manual') continue;
+        const at = Date.parse(r.at);
+        if (!Number.isNaN(at) && Date.now() - at < 7 * 24 * 3600 * 1000) recent += 1;
+      } catch {
+        /* 坏行跳过 */
+      }
+    }
+  }
+  const cap = Number(cfg.maxManualMoodOverridePerWeek ?? 3);
+  if (recent >= cap) {
+    fail(`七天内已经改过 ${recent} 次，上限是 ${cap}。\n要再改，先把 maxManualMoodOverridePerWeek 调高 —— 那本身也是一次入账动作。`);
+  }
+  if (!opts.yes) {
+    if (process.stdin.isTTY) fail('没确认。加 --yes 表示你确实要改 —— 她会看到这条不是你写的');
+    fail('非交互环境要加 --yes。什么都没写');
+  }
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const d = new Date();
+  const at = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const row = {
+    at,
+    feeling: String(opts.feeling).trim(),
+    level,
+    why_ref: '',
+    why_kind: 'manual',
+    by: 'owner',
+    reason: String(opts.why).trim(),
+    decay: null,
+  };
+  await mkdir(stateDir, { recursive: true });
+  await appendFile(moodPath, `${JSON.stringify(row)}\n`, 'utf8');
+
+  // 入账：这条必须和她的账本分开放 —— 它证明的是「有人动过她的心」
+  const entry = `\n## ${at} · 人工改写心情（事前）\n\n- 从：${recent ? '（七天内第 ' + (recent + 1) + ' 次）' : '（本周第一次）'}\n- 改成：${row.feeling}（浓 ${level}/10）\n- 为什么：${row.reason}\n- ⚠️ 这条在注入里会标明「不是你自己的」，她看得见\n`;
+  try {
+    await appendFile(join(stateDir, 'changes.md'), entry, 'utf8');
+  } catch {
+    /* 记不上账不该让这次写入失败，但下面会说 */
+  }
+  say(`已写入：${row.feeling}（浓 ${level}/10）`);
+  say(`七天内第 ${recent + 1} 次，上限 ${cap}`);
+  say('注入里会写明「这条是被改写的，不是她自己的」—— 她下次开口就能看到。');
+  say('她下一轮开口就能看到（心情每轮都读，不用重启）。');
+}
+
 const KILL = join(DSH_HOME, 'realheart', 'DISABLED');
 
 function switchOff() {
@@ -360,7 +450,7 @@ async function forget(opts) {
 }
 
 const argv = process.argv.slice(2);
-const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false, path: '', why: '' };
+const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false, path: '', why: '', feeling: '', level: '', ack: false };
 const rest = [];
 for (let i = 0; i < argv.length; i += 1) {
   const a = argv[i];
@@ -371,12 +461,17 @@ for (let i = 0; i < argv.length; i += 1) {
   else if (a === '--out') opts.out = argv[++i] ?? '';
   else if (a === '--path') opts.path = argv[++i] ?? '';
   else if (a === '--why') opts.why = argv[++i] ?? '';
+  else if (a === '--feeling') opts.feeling = argv[++i] ?? '';
+  else if (a === '--level') opts.level = argv[++i] ?? '';
+  else if (a === '--i-know-this-is-not-her-feeling') opts.ack = true;
   else if (a === '-h' || a === '--help') { usage(); process.exit(0); }
   else if (a.startsWith('--profile=')) opts.profile = a.slice('--profile='.length);
   else if (a.startsWith('--state-dir=')) opts.stateDir = a.slice('--state-dir='.length);
   else if (a.startsWith('--out=')) opts.out = a.slice('--out='.length);
   else if (a.startsWith('--path=')) opts.path = a.slice('--path='.length);
   else if (a.startsWith('--why=')) opts.why = a.slice('--why='.length);
+  else if (a.startsWith('--feeling=')) opts.feeling = a.slice('--feeling='.length);
+  else if (a.startsWith('--level=')) opts.level = a.slice('--level='.length);
   else rest.push(a);
 }
 
@@ -388,6 +483,7 @@ else if (cmd === 'on') switchOn();
 else if (cmd === 'export') await exportData(opts);
 else if (cmd === 'wipe') await wipe(opts);
 else if (cmd === 'forget') await forget(opts);
+else if (cmd === 'mood-override') await moodOverride(opts);
 else if (cmd === 'help') usage();
 else {
   console.error(`[realheart] 不认识这个子命令：${cmd}`);

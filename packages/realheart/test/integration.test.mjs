@@ -138,6 +138,36 @@ test('同一份 assembly 只注入一次（重试 / 多 agent 不会把心情塞
   }
 });
 
+test('被人改写的心情，注入里必须写明「不是你自己的」（P-3b 的核心）', async () => {
+  const h = await boot();
+  try {
+    await writeFile(
+      join(h.stateDir, 'mood.jsonl'),
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        feeling: '有点闷',
+        level: 6,
+        why_ref: '',
+        why_kind: 'manual',
+        by: 'owner',
+        reason: '他说想试试',
+        decay: null,
+      })}\n`,
+    );
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const mood = out.sections.find((s) => s.name === 'realheart:mood');
+    assert.ok(mood, '心情段没注入');
+    assert.match(mood.text, /不是你自己的/);
+    assert.match(mood.text, /被人改写/);
+    assert.match(mood.text, /他说想试试/, '理由没带进去，她没法判断该不该认');
+    // 还得给她一条出路：可以不认
+    assert.match(mood.text, /rh_control|rh_mood/);
+  } finally {
+    await rm(h.stateDir, { recursive: true, force: true });
+  }
+});
+
 test('总开关在的时候，apply 什么都不做（工具不注册、监听不挂）', async () => {
   const dir = join(HOME, 'realheart');
   await mkdir(dir, { recursive: true });

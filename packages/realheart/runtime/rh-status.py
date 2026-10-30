@@ -1000,6 +1000,11 @@ def _user_cfg():
 
 
 def _field_input(f, cur):
+    # noInput 的项（P-3b 那两条）在页面上**只显示、不给输入框**。
+    # 理由不是「藏起来」，是打开它本身必须是一次高成本动作：
+    # 页面上点一下就能改她的心，等于把「至少不能随便乱改」那半条作废了。
+    if f.get('noInput'):
+        return '<span class="mono">%s</span><br><span class="why">只能在命令行改（见 realheart mood-override），这里不给输入框</span>' % esc(cur)
     key = esc(f['key'])
     danger = ' data-danger="1"' if f.get('level') == 'danger' else ''
     if isinstance(f.get('def'), bool):

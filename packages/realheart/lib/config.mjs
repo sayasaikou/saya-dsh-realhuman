@@ -46,6 +46,9 @@ export const DEFAULTS = {
   freeTimeFrom: 10,
   // 她的人格目录（freetime profile 用同一份，不另写一套）
   personaHome: join(QQROOT, 'home'),
+  // P-3b：改她的心那条暗道。默认关，关着时命令行连入口都不存在。
+  allowManualMoodOverride: false,
+  maxManualMoodOverridePerWeek: 3,
 };
 
 // 范围写在这里，Schema 和 validateConfig 共用一份 —— 两处各写一遍，迟早会漂。
@@ -71,6 +74,8 @@ export const Config = Schema.object({
   freeTimeProfile: Schema.string().default(DEFAULTS.freeTimeProfile),
   freeTimeFrom: Schema.number().min(RANGES.freeTimeFrom.min).max(RANGES.freeTimeFrom.max).default(DEFAULTS.freeTimeFrom),
   personaHome: Schema.string().default(DEFAULTS.personaHome),
+  allowManualMoodOverride: Schema.boolean().default(DEFAULTS.allowManualMoodOverride),
+  maxManualMoodOverridePerWeek: Schema.number().min(0).max(99).default(DEFAULTS.maxManualMoodOverridePerWeek),
 });
 
 /** 合法 IP 的粗判 —— 不追求覆盖一切写法，够挡住手滑写进去的域名和空串。 */function isBindAddr(v) {
@@ -105,7 +110,7 @@ export function validateConfig(cfg = {}) {
   // ── 布尔项 ──
   // 不查这个的话，`"injectMood": "yes"` 会被一路带到运行里 —— 而 `"yes"` 是真值，
   // 看起来在工作，其实是「以为关了其实没关」。这种错查起来最费时间。
-  for (const key of ['enabled', 'injectMood', 'servePage', 'announceOnInstall', 'freeTime']) {
+  for (const key of ['enabled', 'injectMood', 'servePage', 'announceOnInstall', 'freeTime', 'allowManualMoodOverride']) {
     if (typeof c[key] !== 'boolean') {
       out.push({
         key, value: c[key],
@@ -268,7 +273,18 @@ export const FIELD_META = [
     range: '绝对路径',
     why: '自由时间那个 profile 用的人格从这儿取。',
   },
-];
+  {
+    key: 'allowManualMoodOverride', label: '允许人工改写她的心情', level: 'danger',
+    noInput: true,
+    range: 'true / false（默认 false）',
+    why: '这是整份配置里唯一「改她的心」的开关。打开之后能用命令行把她当前的心情改写掉 —— 改写过的状态**注入里会写明是人改的**，她自己看得见。因为成本必须高，页面上不给输入框：只能命令行打开，且必须带上「我知道这不是她的感受」那个参数。',
+  },
+  {
+    key: 'maxManualMoodOverridePerWeek', label: '一周最多改写几次', level: 'danger',
+    noInput: true,
+    range: '0–99（默认 3）',
+    why: '超过就拒绝；要改上限得再动一次配置，那一次本身也入账。不让它变成「随便按一下就改」的东西。',
+  },];
 
 /** 面板用的整份描述（带当前值）。Python 侧拿它渲染，不自己维护一份。 */
 export function describeConfig(current = {}) {

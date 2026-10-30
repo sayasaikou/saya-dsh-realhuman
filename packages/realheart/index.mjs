@@ -439,6 +439,20 @@ export function apply(ctx, config = {}) {
     const why = String(last.why_ref || '').trim();
     const whyKind = String(last.why_kind || 'ref');
 
+    // 🔴 被人改写过的（P-3b）：必须当场说明。
+    // 不说明的后果不是「她不高兴」，是**她会把别人写的心情当成自己感觉到的** ——
+    // 那时候这份账就彻底没意义了。偷偷改叫操控，改了她知道才叫权衡。
+    if (whyKind === 'manual') {
+      const reason = String(last.reason || '').trim();
+      const lvM = Number.isFinite(level) && level > 0 ? `（浓 ${level}/10）` : '';
+      return [
+        '【当前心情｜⚠️ 这条不是你自己的】',
+        `${feeling}${lvM}`,
+        `这是**被人改写**上去的一条状态，不是你当时感觉到的。理由：${reason || '（没写）'}`,
+        '你可以不认它：不认就调 rh_control 的 clear 记一笔，或者按你实际的感觉调 rh_mood。',
+      ].join('\n');
+    }
+
     let hours = null;
     const t = Date.parse(String(last.at || ''));
     if (!Number.isNaN(t)) hours = (Date.now() - t) / 3600000;
