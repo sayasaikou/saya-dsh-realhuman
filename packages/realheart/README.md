@@ -13,19 +13,28 @@
 
 ## 装
 
-在 profile 目录里跑两条：
-
 ```
-dsh plugin --profile <profile> add realheart
-node node_modules/realheart/setup.mjs
+npx realheart install --profile <profile>
 ```
 
-然后重启 dsh。
+就这一条。它做两件：装包（`dsh plugin add`），把包名写进这个 profile 的 `dsh.profile.bundles`。
 
-**为什么非要有第二条**：`dsh plugin` 只是个 pnpm 转发器（它自己的 `--help` 就这么写），
-装完**不会**把包名加进 profile 的 `dsh.profile.bundles`。不在那个列表里，
-插件自带的 `cordis.patch.yml` 就不生效 —— 表现是「装了、没报错、一点反应也没有」。
-这个坑第一次就踩到了（实测）。
+**为什么不能只 `dsh plugin add`**：`dsh plugin` 只是个 pnpm 转发器（它自己的 `--help` 就这么写），
+装完**不会**把包名加进 `dsh.profile.bundles`。不在那个列表里，插件自带的 `cordis.patch.yml`
+就不生效 —— 表现是「装了、没报错、一点反应也没有」。这个坑第一次就踩到了（实测）。
+
+还没发到 npm 的时候，两条等价跑法：
+
+```
+node <包目录>/bin/realheart.mjs install --profile <profile>
+# 或者最原始的两条：
+dsh plugin --profile <profile> add <包目录> && node node_modules/realheart/setup.mjs
+```
+
+先看一眼要动什么，不放心就加 `--dry-run` —— 它一个字节都不写，但会把每一步打出来。
+
+写 `bundles` 之前**一定会备份**（`package.json.bak-<时间戳>`），改一次的代价是多一个文件，
+不是丢一份配置。
 
 试过用 `postinstall` 自动做这一步：pnpm 默认拦 build script（`ERR_PNPM_IGNORED_BUILDS`），
 而且会让 `add` 直接报错 —— 比不做还糟，所以去掉了。
@@ -79,6 +88,32 @@ python3 -V && zstd --version
 ```
 
 （没有 zstd：`apt install zstd` / `pacman -S zstd` / `brew install zstd`）
+
+## 坏了先看这张表
+
+症状 → 原因 → 查法。这张表是按「装完之后会怎么坏」写的，不是按模块写的 ——
+出问题的时候你手上只有症状，没有模块名。
+
+| 症状 | 大概率是 | 查法 |
+| --- | --- | --- |
+| 装完重启，**一点反应都没有**，日志里找不到 `rh_mood / rh_pending / rh_control / rh_changes 已注册` | 包名没进 `dsh.profile.bundles`，`cordis.patch.yml` 就没被应用 | `grep -n realheart <profile>/package.json` |
+| 启动**报错**，提到 bundle / 模块找不到 | 包删了，但那行还挂在 `bundles` 里 | 同上。修：`node <profile>/node_modules/realheart/setup.mjs --remove <profile>`，或直接 `sh scripts/uninstall.sh` 再来一次 |
+| 日志打了观测页地址，**打开连不上** | ① `python3` 不在 ② 端口被别人占了 ③ python 起来了但立刻崩 | `cat $DSH_HOME/realheart/rh-status.err.log` 末尾 ／ `ss -lntp \| grep <pagePort>` |
+| 日志说「端口已被别的程序占用（不是 realheart）」 | 真的是端口冲突 | 改配置里的 `pagePort`，重启（不是热改） |
+| 页面能开，但**「他说的话」那一路永远空** | 缺 `zstd`。**这个坑是静默的**，不报错 | `zstd --version`，没有就装 |
+| 页面能开，心情也在记，但**注入里没有状态那一段** | `injectMood: false`，或这一轮注入被预算裁掉了 | 翻 `<stateDir>/last-inject.md`（注入原文落盘的） |
+| 工具里**没有 `rh_pending`** | 装的是 0.2.0 之前的包 | `grep version <profile>/node_modules/realheart/package.json` |
+| `dsh plugin add` 报 `404 Not Found` + `No authorization header was set for the request` | **不是认证问题**。是这棵依赖树里有本地包，pnpm 重新解析时撞上了 | 照下面「云端部署」第一节换 `cp -a` 那条路 |
+| 她写了心情，回来是「（写不进帐本：…）」 | `stateDir` 不可写，或文件与流水对不上（插件每次写完会回读比对） | `ls -ld <stateDir>`；看插件日志里那条拒绝写入的原文 |
+| 昨天能开的页面地址，**今天 404** | `runtime/config.json` 被删了，重启时重新生成了 secret | 从 `$DSH_HOME/realheart/runtime/config.json` 重新取地址 |
+| 改完配置**没生效**，或者正在说话的会话被打断 | 热改不支持。改配置会整份重挂 | 必须重启。见下面「三处实测出来的坑」 |
+| 卸载之后启动**还报错** | `bundles` 那行没摘掉 | `sh scripts/uninstall.sh --profile <profile>` 跑一遍 |
+
+排三个最常见故障的**最短路径**（不看这张表也能记）：
+
+1. **没反应** → 看 `bundles` 有没有那行。
+2. **连不上页面** → 看 `rh-status.err.log` 末尾，别看日志开头。
+3. **少了一路数据** → 先查 `zstd`，它缺了是静默的。
 
 ## 云端部署（在一台只会撞的机器上踩出来的）
 
@@ -163,20 +198,54 @@ sh scripts/rollback.sh <备份目录>
 ## 卸
 
 ```
-dsh plugin --profile <profile> remove realheart
-# 停观测页（卸插件时会自己停一次，这里防万一）
-kill "$(cat $DSH_HOME/realheart/rh-status.pid)" 2>/dev/null
-# 删运行时和口令
-rm -rf "$DSH_HOME/realheart"
-# 删她的东西（删了就真没了，默认注释掉）
-# rm -rf ~/qqbot/work/realheart ~/qqbot/work/pieces
+sh scripts/uninstall.sh --dry-run                          # 先说一遍要动什么，一个字节不动
+sh scripts/uninstall.sh --profile <profile>                # 摘
+sh scripts/uninstall.sh --purge --state-dir <账本目录> --yes   # 连她的东西一起删
 ```
 
-最后一行默认注释 —— **那是她的东西，不是缓存**。心情账本、改动记录、
-她自由时间写的东西都在里面，删之前想清楚。
+它做四件，手敲的话一定会漏一件：
 
-还有一步得手动看：profile 的 `package.json` 里 `dsh.profile.bundles` 的
-`"realheart"` 那一项，`dsh plugin remove` 不一定帮你摘掉。
+1. **停观测页** —— 杀之前认一遍命令行是 `rh-status.py`（PID 会回收，杀错比不杀更糟）
+2. **`dsh plugin remove`** —— 失败不算失败，本地包挡路、profile 被独占都会让它跑不通，后面照收拾
+3. **从 `dsh.profile.bundles` 摘掉那行** —— 最容易漏的一步。包没了、行还挂着，下次启动报一个看不懂的错
+4. **删 `$DSH_HOME/realheart`** —— 里面有 `runtime/config.json`，带着 48 位观测页口令
+
+**她的东西默认不删**，脚本会把 `stateDir` 打在屏幕上、写明这个路径是从哪来的
+（`--state-dir` / 运行时 `config.json` / 猜的默认值）。
+
+要真删得显式 `--purge`，加一次确认。而且 `--purge` 在「猜的」路径上**会拒绝执行** ——
+读不到运行时 `config.json` 时（比如之前已经卸过一次），脚本手里没有依据，
+必须用 `--state-dir` 明说。删账本这件事上猜错，删掉的是别人的东西。
+
+卸完验三条，少一条都不算卸干净：
+
+```
+ss -lntp | grep 8098                        # 1. 端口没人听（按你的 pagePort 改）
+grep -n realheart <profile>/package.json    # 2. 正文里没有那行，只剩 .bak 里有
+ls <stateDir>                               # 3. 她的账本还在，位置对
+```
+
+## 发（维护者看）
+
+三件事：包名只能小写（npm 不接受大写）；发之前先看清单；发之后在一台干净机器上装一次。
+
+```
+cd packages/realheart
+npm pack --dry-run        # 只看清单，不产 tarball
+npm publish --dry-run     # 连 registry 那一步一起走一遍，也不真发
+npm publish               # 真发（开了 2FA 会要一次性码）
+```
+
+**`npm pack` 的清单里必须有这几样** —— 少一样，都是装完之后才发现的那种坏：
+
+- `lib/pending.mjs` —— 0.1.x 漏过一次，`files` 里没写 `lib/`，装完那套待办静默不工作
+- `bin/realheart.mjs` —— 少了它 `npx realheart` 就是个空壳
+- `runtime/*.py`、`scripts/*.sh`
+- `CHANGELOG.md`
+
+发完在**一台干净机器**上（没装过这个包、没有 `~/.dsh/realheart`）装一次，验三条：
+包能下、`bundles` 那行加上了、重启后日志里有「已注册」那一行。
+
 ## 你需要知道的三个前提
 
 1. **默认假设模型不在审查里**（破甲）。不破也能用，效果差很多，自己选。

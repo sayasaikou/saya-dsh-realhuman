@@ -4,14 +4,19 @@
   "description": "给她一个能记账的心情层：心情必须有来处，改动必须有账，她自己能停能查",
   "type": "module",
   "main": "index.mjs",
+  "bin": {
+    "realheart": "bin/realheart.mjs"
+  },
   "files": [
     "index.mjs",
     "lib/",
+    "bin/",
     "setup.mjs",
     "cordis.patch.yml",
     "runtime/",
     "scripts/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
