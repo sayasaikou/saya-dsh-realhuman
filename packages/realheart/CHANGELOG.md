@@ -50,6 +50,23 @@
 - `setup.mjs --remove`：摘 `bundles` 的正式入口。幂等，摘不到不报错。
 - `setup.mjs` 加 `--dry-run`。
 
+### 面板能改配置了（全量暴露 + 三级标识 + 改动入账）
+
+- 观测页多一块「配置」：15 项全列出来，一项不藏。四列 —— 级别 / 当前值 / 合法范围 / **改了会怎样**。
+- **写的是 `$DSH_HOME/realheart/config.user.json`，不是 profile 的 YAML。**
+  改 `cordis.patch.yml` 会让 dsh 整份重挂、把正在说话的会话打成 inactive context（撞过三次）。
+  插件启动时读 user 配置、排在 dsh 传进来的配置之后生效；代价（必须重启）直接印在页面标题上。
+- **三级标识**由 `lib/config.mjs` 的 `FIELD_META` 定义，插件启动时写成 `runtime/config-schema.json`，
+  Python 读它渲染 —— 定义只有一份。危险项提交时弹确认、点名是哪几项。
+- **危险项改了入账**：写进 `changes.md`（哪一项、从什么改到什么、表单里那句「为什么」），
+  写之前备份旧的 `.bak-<时间戳>`。
+- **某个坏值不会让插件起不来**：启动时丢掉那一项并报出来，别的照常。dsh 传的配置仍按「拒绝启动」处理。
+- 顺带修了 `validateConfig` 的一个漏：布尔项写成字符串（`"yes"`）以前能过，而字符串是真值 ——
+  表现是「以为关了其实没关」。现在拦。
+- ⚠️ **过程中抓到一个自己写出来的 bug**：面板原本写 `runtime/config.user.json`，
+  而插件读 `realheart/config.user.json` —— 两个路径各写一份，表现是「面板上改了、重启后没变」，
+  而且两边看着都对。现在路径由插件写进 `config.json` 的 `userConfig` 交给 Python，只有一个来源。
+
 ### 停用 / 导出 / 删除（P-3 里能立刻做的三件）
 
 - `npx realheart off` / `on`：**总开关用一个哨兵文件** `$DSH_HOME/realheart/DISABLED`，

@@ -336,6 +336,22 @@ border:2px solid #d6f5e3;border-top:0;border-left:0;transform:rotate(42deg)}
 .err{color:#e0796a;font-size:13px}
 p.note{margin:10px 0 0;color:#6f7885;font-size:12.5px}
 footer{margin-top:26px;color:#5c6472;font-size:12.5px;text-align:center}
+/* 配置编辑区：三级标识靠左边那列颜色，别靠图标 —— 图标在窄屏上会挤成一团 */
+table.cfg{width:100%;border-collapse:collapse;font-size:13px}
+table.cfg th{text-align:left;color:#9aa3b0;font-weight:600;padding:6px 8px;border-bottom:1px solid #222832;font-size:12px;letter-spacing:.5px}
+table.cfg td{padding:8px;border-bottom:1px solid #1b202a;vertical-align:top}
+table.cfg tr.lv-danger td.lv{color:#ef8a8a}
+table.cfg tr.lv-caution td.lv{color:#e0c060}
+table.cfg tr.lv-normal td.lv{color:#7fb2d9}
+table.cfg .why{color:#8b929c;font-size:12px;line-height:1.6;max-width:34ch}
+table.cfg input,table.cfg select{background:#0e1014;color:#e6e8ec;border:1px solid #2a303c;
+border-radius:7px;padding:5px 8px;font:inherit;font-size:12.5px}
+table.cfg input:focus,table.cfg select:focus{outline:none;border-color:#3f5a78}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#a9b2c0}
+.cfgbar{margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.cfgbar button{background:#1d2530;color:#dbe3ee;border:1px solid #2f3a48;border-radius:8px;
+padding:7px 16px;font:inherit;font-size:13px;cursor:pointer}
+.cfgbar button:hover{background:#243040;border-color:#3f5a78}
 a{color:#6ea8fe;text-decoration:none}
 .wide{grid-column:1/-1}
 .wk{display:grid;grid-template-columns:52px 1fr 1fr 1fr 1.6fr;gap:8px;
@@ -942,7 +958,173 @@ PAGE = """<!doctype html><html lang="zh"><meta charset="utf-8">
 </html>"""
 
 
-def build_page():
+# ---------------------------------------------------------------- 配置编辑区
+#
+# 为什么这里能改、而「热改配置」是被禁止的：
+# 面板写的是运行时目录下的 config.user.json —— 那是插件自己读的文件，dsh 不监视它，
+# 所以写它**不会**把插件整份重挂（改 profile 的 cordis.patch.yml 会，正在说话的会话
+# 会被打成 inactive context，那条撞过三次）。
+#
+# 代价写在页面上，不藏：**改完必须重启**。
+#
+# 三级标识来自 lib/config.mjs 的 FIELD_META —— 定义只有一份，
+# 插件启动时把它写成 config-schema.json，这里读它渲染。两边不会各说各的。
+
+CFG_SCHEMA = os.path.join(HERE, 'config-schema.json')
+# 用户配置的路径由**插件**给（config.json 里的 userConfig），不在这里自己拼。
+# 之前这里写的是 HERE（runtime 目录），插件读的是上一级 —— 面板写进去了，插件读不到，
+# 表现是「面板上改了、重启后没变」，而且两边看着都对。这种两个地方各有一份路径的事，
+# 只能有一个来源。
+_user_cfg_path = _cfg.get('userConfig')
+USER_CFG = (os.path.expanduser(str(_user_cfg_path)) if _user_cfg_path
+            else os.path.join(os.path.dirname(HERE), 'config.user.json'))
+LEVEL_TEXT = {'normal': '正常', 'caution': '谨慎', 'danger': '危险'}
+
+
+def _load_json(path, default):
+    try:
+        with open(path, encoding='utf-8') as fh:
+            return json.load(fh)
+    except Exception:
+        return default
+
+
+def _cfg_schema():
+    d = _load_json(CFG_SCHEMA, None)
+    return d if isinstance(d, dict) and d.get('fields') else None
+
+
+def _user_cfg():
+    d = _load_json(USER_CFG, {})
+    return d if isinstance(d, dict) else {}
+
+
+def _field_input(f, cur):
+    key = esc(f['key'])
+    danger = ' data-danger="1"' if f.get('level') == 'danger' else ''
+    if isinstance(f.get('def'), bool):
+        now = bool(cur)
+        opts = ''.join(
+            '<option value="%s"%s>%s</option>' % (v, ' selected' if now is (v == 'true') else '', v)
+            for v in ('true', 'false')
+        )
+        return '<select name="%s"%s data-was="%s">%s</select>' % (
+            key, danger, 'true' if now else 'false', opts)
+    return '<input type="text" name="%s"%s data-was="%s" value="%s" size="26">' % (
+        key, danger, esc(cur), esc(cur))
+
+
+def render_config_edit(flash=''):
+    schema = _cfg_schema()
+    if not schema:
+        return ('<div class="card wide"><h2>配置</h2><p class="note">'
+                '还没拿到配置描述 —— 重启一次插件，它会在运行时目录写一份 config-schema.json。'
+                '在那之前这一块只能看不能改。</p></div>')
+    user = _user_cfg()
+    rows = []
+    for f in schema['fields']:
+        lv = f.get('level') or 'normal'
+        cur = user.get(f['key'], f.get('current'))
+        rows.append(
+            '<tr class="lv-%s"><td class="lv">%s</td>'
+            '<td><b>%s</b><br><span class="mono">%s</span></td>'
+            '<td>%s</td><td class="mono">%s</td><td class="why">%s</td></tr>'
+            % (lv, LEVEL_TEXT.get(lv, lv), esc(f.get('label') or f['key']), esc(f['key']),
+               _field_input(f, cur), esc(f.get('range') or ''), esc(f.get('why') or '')))
+
+    head = ('<tr><th>级别</th><th>项</th><th>当前值</th><th>合法范围</th><th>改了会怎样</th></tr>')
+    esc_hint = esc(schema.get('escape', {}).get('note', ''))
+    flash_html = ('<p class="ok">%s</p>' % esc(flash)) if flash else ''
+
+    return (
+        '<div class="card wide"><h2>配置（改了要重启）</h2>'
+        + flash_html
+        + '<form method="post" action="config" onsubmit="return rhConfirm(this)">'
+        '<table class="cfg">%s%s</table>'
+        '<div class="cfgbar">'
+        '<input type="text" name="__why" placeholder="为什么改（会写进改动记录，可留空）" size="42">'
+        '<button type="submit">保存到 config.user.json</button>'
+        '<span class="note">%s</span>'
+        '</div></form>'
+        '<script>'
+        'function rhConfirm(f){'
+        'var t=[];for(var i=0;i<f.elements.length;i++){var e=f.elements[i];'
+        'if(!e.name||e.name==="__why")continue;'
+        'if(e.getAttribute("data-danger")==="1"&&e.value!==e.getAttribute("data-was"))t.push(e.name);}'
+        'if(!t.length)return true;'
+        'return confirm("这些是危险项：\\n"+t.join("、")+"\\n\\n改了要重启才生效。确定？");}'
+        '</script>'
+        '</div>'
+    ) % (head, ''.join(rows), esc_hint)
+
+
+def apply_config_post(form):
+    """(ok, message)。只接收 schema 里认识的项；写前把旧值读出来对账。"""
+    schema = _cfg_schema()
+    if not schema:
+        return False, '还没拿到配置描述，写不了'
+    user = _user_cfg()
+    known = {f['key']: f for f in schema['fields']}
+    new = dict(user)
+    changed = []
+    for key, meta in known.items():
+        if key not in form:
+            continue
+        raw = form[key][0] if isinstance(form.get(key), list) else form.get(key)
+        # 类型按 schema 里默认值的类型走 —— 表单拿到的永远是字符串。
+        # 不转的话 "9000" 会写进 config.user.json，插件的校验会判它「不是整数」然后丢掉，
+        # 表现是「面板上改了、重启后没生效」—— 最难查的那一种。
+        if isinstance(meta.get('def'), bool):
+            val = (raw == 'true')
+        elif isinstance(meta.get('def'), int):
+            try:
+                val = int(str(raw).strip())
+            except (TypeError, ValueError):
+                return False, '%s 要一个整数（收到 %r）' % (key, raw)
+        else:
+            val = raw
+        old = user.get(key, meta.get('current'))
+        if val != old:
+            changed.append((key, old, val))
+        new[key] = val
+    if not changed:
+        return True, '没有改动'
+    # 备份旧的那份，再写新的 —— 改配置一定要能退回去
+    try:
+        if os.path.exists(USER_CFG):
+            stamp = time.strftime('%Y%m%d-%H%M%S')
+            with open(USER_CFG, 'rb') as src, open(USER_CFG + '.bak-' + stamp, 'wb') as dst:
+                dst.write(src.read())
+        tmp = USER_CFG + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(new, fh, ensure_ascii=False, indent=2)
+            fh.write('\n')
+        os.replace(tmp, USER_CFG)
+    except Exception as err:
+        return False, '写不进去：%s' % err
+
+    why = ''
+    if isinstance(form.get('__why'), list) and form['__why']:
+        why = str(form['__why'][0]).strip()
+    lines = ['', '## %s · 面板改配置（事前）' % time.strftime('%Y-%m-%d %H:%M'), '',
+             '来源：观测页配置区',
+             '生效：**重启之后**（改的是 config.user.json，不热改）']
+    for key, old, val in changed:
+        lines.append('- `%s`：%s → %s' % (key, json.dumps(old, ensure_ascii=False), json.dumps(val, ensure_ascii=False)))
+    if why:
+        lines.append('- 为什么：%s' % why)
+    else:
+        lines.append('- 为什么：（没填）')
+    try:
+        os.makedirs(RH_STATE, exist_ok=True)
+        with open(os.path.join(RH_STATE, 'changes.md'), 'a', encoding='utf-8') as fh:
+            fh.write('\n'.join(lines) + '\n')
+    except Exception:
+        pass  # 记不上账不该让这次修改失败，但页面上会说清
+    return True, '已保存 %d 项，重启后生效' % len(changed)
+
+
+def build_page(flash=''):
     info = sysinfo()
     cards = ''.join([
         render_mood(),
@@ -955,6 +1137,7 @@ def build_page():
         render_audit(),
         render_shared(),
         render_memes(),
+        render_config_edit(flash),
         render_machine(),
     ])
     return PAGE % {
@@ -1094,12 +1277,50 @@ class Handler(BaseHTTPRequestHandler):
         if rest in (b'/debug',):
             self._send(200, build_debug().encode('utf-8'))
             return
+        if rest.startswith(b'/config'):
+            # 只在真正提交后带 ?ok=... 进来的那一次显示提示
+            flash = ''
+            q = self.path.split('?', 1)[1] if '?' in self.path else ''
+            if 'saved=' in q:
+                from urllib.parse import unquote_plus
+                flash = unquote_plus(q.split('saved=', 1)[1].split('&', 1)[0])
+            elif 'err=' in q:
+                from urllib.parse import unquote_plus
+                flash = '没改成：' + unquote_plus(q.split('err=', 1)[1].split('&', 1)[0])
+            self._send(200, build_page(flash).encode('utf-8'))
+            return
         self._send(404, b'not found', 'text/plain; charset=utf-8')
+
+    def do_POST(self):
+        # 写操作只有一处：改配置。别的一律 405 —— 这个页面默认是只读的。
+        rest = self._ok_path(self.path)
+        if rest is None:
+            self._send(404, b'not found', 'text/plain; charset=utf-8')
+            return
+        if not rest.startswith(b'/config'):
+            self._reject()
+            return
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 65536:
+            self._send(400, b'bad body', 'text/plain; charset=utf-8')
+            return
+        from urllib.parse import parse_qs, quote
+        body = self.rfile.read(n).decode('utf-8', 'replace')
+        form = parse_qs(body, keep_blank_values=True)
+        ok, msg = apply_config_post(form)
+        loc = '/%s/config?saved=%s' % (SECRET.decode('utf-8', 'surrogateescape'), quote(msg))
+        self.send_response(303)
+        self.send_header('Location', loc)
+        self.send_header('Content-Length', '0')
+        self.send_header('Cache-Control', 'no-store, max-age=0')
+        self.end_headers()
 
     def _reject(self):
         self._send(405, b'method not allowed', 'text/plain; charset=utf-8')
 
-    do_POST = _reject
     do_PUT = _reject
     do_DELETE = _reject
     do_PATCH = _reject

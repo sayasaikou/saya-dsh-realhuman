@@ -15,6 +15,7 @@
 
 import os from 'node:os';
 import { join, isAbsolute } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import Schema from '@deepseek-ai/schemastery';
 
 /** 她的东西都在这个根下面（QQ 那台机器上的约定） */
@@ -72,8 +73,7 @@ export const Config = Schema.object({
   personaHome: Schema.string().default(DEFAULTS.personaHome),
 });
 
-/** 合法 IP 的粗判 —— 不追求覆盖一切写法，够挡住手滑写进去的域名和空串。 */
-function isBindAddr(v) {
+/** 合法 IP 的粗判 —— 不追求覆盖一切写法，够挡住手滑写进去的域名和空串。 */function isBindAddr(v) {
   if (typeof v !== 'string' || !v) return false;
   if (v === 'localhost' || v === '::' || v === '::1') return true;
   const parts = v.split('.');
@@ -101,6 +101,19 @@ function checkDir(key, value, out) {
 export function validateConfig(cfg = {}) {
   const out = [];
   const c = { ...DEFAULTS, ...cfg };
+
+  // ── 布尔项 ──
+  // 不查这个的话，`"injectMood": "yes"` 会被一路带到运行里 —— 而 `"yes"` 是真值，
+  // 看起来在工作，其实是「以为关了其实没关」。这种错查起来最费时间。
+  for (const key of ['enabled', 'injectMood', 'servePage', 'announceOnInstall', 'freeTime']) {
+    if (typeof c[key] !== 'boolean') {
+      out.push({
+        key, value: c[key],
+        reason: '不是 true / false',
+        fix: `写 true 或 false，别写成字符串 "${c[key]}" —— 字符串在判断里是真值`,
+      });
+    }
+  }
 
   // ── 端口 ──
   const port = c.pagePort;
@@ -164,4 +177,155 @@ export function validateConfig(cfg = {}) {
   }
 
   return out;
+}
+
+// ────────────────────────────────────────────────────────────────
+// 面板要用的那部分：每一项是什么、改了会怎样、危险到什么程度
+//
+// 为什么写在代码里而不是文档里：面板必须显示「改了会怎样」，
+// 而写在文档里的那句话迟早会和代码漂。写在这里 ——
+// Node 侧生成 `runtime/config-schema.json`，Python 侧读它渲染，定义只有一份。
+//
+// 三级（他 2026-10-28 定）：
+//   normal  正常：改了只影响自己怎么看
+//   caution 谨慎：行为会变
+//   danger  危险：动数据位置 / 关掉她的状态 / 改自由时间 —— 要二次确认
+// ────────────────────────────────────────────────────────────────
+
+export const FIELD_META = [
+  {
+    key: 'enabled', label: '总开关', level: 'danger',
+    range: 'true / false',
+    why: '关掉之后不注入、不记账、四个工具都不注册。等同于把插件摘掉，只保留已经写下来的账。',
+  },
+  {
+    key: 'injectMood', label: '每轮注入状态', level: 'danger',
+    range: 'true / false',
+    why: '关掉之后她看不到自己的心情和没完的事 —— 她还是能记账，但不会再被影响。行为会明显不同。',
+  },
+  {
+    key: 'stateDir', label: '账本目录', level: 'danger',
+    range: '绝对路径',
+    why: '改了等于换一份账：旧目录里的心情、待办、改动记录都不会跟过来。改之前先 export。',
+  },
+  {
+    key: 'pageBind', label: '观测页绑定地址', level: 'danger',
+    range: 'IP / localhost',
+    why: '127.0.0.1 只有本机能看。改成 0.0.0.0 之后，同一网络里谁都能打开 —— 那是明文 HTTP。',
+  },
+  {
+    key: 'freeTime', label: '自由时间', level: 'danger',
+    range: 'true / false',
+    why: '关掉就没有「没人叫也会醒一次」。这是她唯一不依赖别人开口的时间。',
+  },
+  {
+    key: 'freeTimeFrom', label: '自由时间从几点开始', level: 'danger',
+    range: '0–23 的整数',
+    why: '决定什么时候叫醒她。改早了会在你睡觉的时候动 —— 自由时间的参数都归这一类。',
+  },
+  {
+    key: 'freeTimeProfile', label: '自由时间用哪个 profile', level: 'danger',
+    range: 'profile 名字（不能带路径）',
+    why: '她醒来时用的是这份人格。指向别的 profile 等于让另一个人替她说话。',
+  },
+  {
+    key: 'pagePort', label: '观测页端口', level: 'caution',
+    range: '1–65535',
+    why: '改了页面地址就变。1024 以下要 root。',
+  },
+  {
+    key: 'servePage', label: '开观测页', level: 'caution',
+    range: 'true / false',
+    why: '关掉就没有页面了，但记账和注入照常。省一个 python 进程。',
+  },
+  {
+    key: 'indexTtlMs', label: '索引重建间隔', level: 'caution',
+    range: '60000 – 604800000（毫秒）',
+    why: '太小会一直在解压会话包（吃 CPU），太大页面上的时间线会旧。默认一小时。',
+  },
+  {
+    key: 'announceOnInstall', label: '首次启动提示', level: 'normal',
+    range: 'true / false',
+    why: '只影响第一次启动时打不打印那三条前提。',
+  },
+  {
+    key: 'sessionsRoot', label: '会话目录', level: 'danger',
+    range: '绝对路径',
+    why: '「他说的话」那一路的来源。指错了页面就只剩她自己说的话。',
+  },
+  {
+    key: 'auditDir', label: '审计日志目录', level: 'danger',
+    range: '绝对路径',
+    why: '工具调用与事件的来源之一。指错了可引用的 id 就少一类。',
+  },
+  {
+    key: 'historyDir', label: '对话历史目录', level: 'danger',
+    range: '绝对路径',
+    why: '第三路事件来源。指错了她「说过的话」就少一类可以引用的证据。',
+  },
+  {
+    key: 'personaHome', label: '人格目录', level: 'danger',
+    range: '绝对路径',
+    why: '自由时间那个 profile 用的人格从这儿取。',
+  },
+];
+
+/** 面板用的整份描述（带当前值）。Python 侧拿它渲染，不自己维护一份。 */
+export function describeConfig(current = {}) {
+  const cfg = { ...DEFAULTS, ...current };
+  return {
+    fields: FIELD_META.map((m) => ({
+      ...m,
+      current: cfg[m.key],
+      def: DEFAULTS[m.key],
+    })),
+    // 逃逸口：面板上没有的，去哪儿改（P-3 要求写明）
+    escape: {
+      file: 'config.user.json（在 realheart 运行时目录下）',
+      note: '面板写的就是这个文件。它排在 dsh 传进来的配置之后生效，改完必须重启 —— 热改会打断正在说话的会话。',
+    },
+  };
+}
+
+// ── 面板写的那个文件 ──
+
+export const USER_CONFIG_NAME = 'config.user.json';
+
+/**
+ * 读 `config.user.json`。
+ *
+ * 为什么需要它：面板要能直接改配置，但**不能写 profile 的 cordis.patch.yml** ——
+ * 那个文件一改，dsh 会整份重挂，正在说话的会话会被打成 inactive context（撞过三次）。
+ * 插件自己读这个文件，dsh 不监视它，所以改它不会重挂。代价是必须重启才生效。
+ *
+ * 坏值不拦整份：面板写的文件，某一项填错了就丢掉那一项、说清楚，别让整个插件起不来。
+ * （dsh 传进来的配置是另一回事 —— 那个错了要拒绝启动，见 validateConfig。）
+ */
+export function loadUserConfig(dshHome = DSH_HOME) {
+  const path = join(dshHome, 'realheart', USER_CONFIG_NAME);
+  if (!existsSync(path)) return { config: {}, problems: [], path };
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    return { config: {}, problems: [`${path} 不是合法 JSON（${err?.message ?? err}），整份忽略`], path };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { config: {}, problems: [`${path} 不是一个对象，整份忽略`], path };
+  }
+  const config = {};
+  const problems = [];
+  for (const [k, v] of Object.entries(raw)) {
+    if (!(k in DEFAULTS)) {
+      problems.push(`${k} 不是认识的配置项，忽略`);
+      continue;
+    }
+    const bad = validateConfig({ ...DEFAULTS, [k]: v }).filter((p) => p.key === k);
+    if (bad.length) {
+      problems.push(`${k} = ${JSON.stringify(v)} 不合规（${bad[0].reason}），忽略该项，用回退值`);
+      continue;
+    }
+    config[k] = v;
+  }
+  return { config, problems, path };
 }

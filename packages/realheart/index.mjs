@@ -19,7 +19,7 @@
  * 那件事机器判定不了，硬判就是另一种演。先把门立起来，真假留给时间看。
  */
 
-import { Config, DEFAULTS, DSH_HOME, QQROOT, validateConfig } from './lib/config.mjs';
+import { Config, DEFAULTS, DSH_HOME, QQROOT, validateConfig, loadUserConfig, describeConfig } from './lib/config.mjs';
 import { maskSecret, pageHint, whereSecret } from './lib/secrets.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -177,7 +177,11 @@ export const name = 'realheart';
 export { Config };
 
 export function apply(ctx, config = {}) {
-  const cfg = { ...DEFAULTS, ...config };
+  // 面板写的那份（config.user.json）排在 dsh 传进来的配置**之后**生效。
+  // 理由在 lib/config.mjs：面板不能写 profile 的 YAML（那会热重挂、打断会话），
+  // 所以它写自己的文件，插件启动时读进来合并。代价：必须重启才生效。
+  const user = loadUserConfig(DSH_HOME);
+  const cfg = { ...DEFAULTS, ...config, ...user.config };
   if (cfg.enabled === false) return;
 
   // ── 总开关（P-3 kill switch）──
@@ -234,6 +238,9 @@ export function apply(ctx, config = {}) {
   };
 
   const moodFile = () => join(cfg.stateDir, 'mood.jsonl');
+
+  // user 文件里被丢掉的项要说出来 —— 沉默地忽略一项配置，等于让人以为改了。
+  for (const p of user.problems) log(`配置：${p}`, 'error');
 
   // ── pending 账本（2026-10-28 加）──
   //
@@ -657,10 +664,22 @@ export function apply(ctx, config = {}) {
         secret,
         root: QQROOT,
         stateDir: cfg.stateDir,
+        // 面板要写的那个文件 —— 由插件指定路径，别让 Python 自己猜。
+        // 之前两边各写一份路径，面板写进 runtime/、插件读 realheart/，改了永远不生效。
+        userConfig: join(DSH_HOME, 'realheart', 'config.user.json'),
       }, null, 2), 'utf8');
       await chmod(cfgPath, 0o600);
     } catch (err) {
       return `写 config.json 失败：${err?.message ?? err}`;
+    }
+
+    // 给面板用的那份描述（每一项的默认值 / 范围 / 改了会怎样 / 危险级别）。
+    // 写在 Node 这边、由 Python 读 —— 定义只维护一份，两面才不会各说各的。
+    // 写不了不算失败：面板会退化成「没有编辑区」，别的照常。
+    try {
+      await writeFile(join(dir, 'config-schema.json'), JSON.stringify(describeConfig(cfg), null, 2), 'utf8');
+    } catch (err) {
+      log(`写 config-schema.json 失败（面板会没有编辑区）：${err?.message ?? err}`, 'error');
     }
 
     let alive = false;
