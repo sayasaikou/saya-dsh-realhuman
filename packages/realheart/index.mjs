@@ -391,12 +391,20 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  async function readMood() {
+  /**
+   * 读心情账本。
+   *
+   * `tail` 只解析最后 N 条 —— 注入每轮都要读一次，账本长大了不该整份读进来。
+   * 之前不敢这么改：作废用的是行号，截断之后行号全错位，会把「作废的那条」当成有效的。
+   * 现在作废的键已经是 `at`（稳定标识），才轮到这一步。
+   */
+  async function readMood({ tail = 0 } = {}) {
     try {
       const text = await readFile(moodFile(), 'utf8');
+      const lines = text.split('\n').filter((l) => l.trim());
+      const use = tail > 0 && lines.length > tail ? lines.slice(-tail) : lines;
       const rows = [];
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
+      for (const line of use) {
         try {
           rows.push(JSON.parse(line));
         } catch {
@@ -513,7 +521,7 @@ export function apply(ctx, config = {}) {
     // 否则她会被自己的冻结状态反过来影响。
     if (ctl.paused) return '';
 
-    const rows = await readMood();
+    const rows = await readMood({ tail: Number(cfg.moodTailLines) > 0 ? Number(cfg.moodTailLines) : 0 });
     if (!rows.length) return '';
 
     // 从最后一笔往前找，跳过被他作废的。

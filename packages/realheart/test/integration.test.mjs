@@ -413,3 +413,47 @@ test('老的行号作废记录还认（不能因为改了键就把旧账读错�
     await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
+// ── M1-4：账本变长不拖慢注入 ──
+
+test('只读尾部：账本 300 条，注入用的是最后那条（M1-4）', async () => {
+  const h = await boot({ moodTailLines: 5 });
+  try {
+    const rows = [];
+    for (let i = 0; i < 300; i += 1) {
+      rows.push(JSON.stringify({
+        at: `2026-10-${String(1 + (i % 28)).padStart(2, '0')} 10:00:00`,
+        feeling: `第${i}条心情`, level: 5, why_ref: '', why_kind: 'ref', decay: null,
+      }));
+    }
+    await writeFile(join(h.stateDir, 'mood.jsonl'), `${rows.join('\n')}\n`);
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const mood = out.sections.find((s) => s.name === 'realheart:mood');
+    assert.ok(mood, '心情段没了');
+    assert.match(mood.text, /第299条心情/, '没取到最后一条');
+    assert.ok(!mood.text.includes('第0条心情'), '把整份账本都读进来了');
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('尾部窗口里最后一条被作废时，回落到窗口内上一条', async () => {
+  const h = await boot({ moodTailLines: 5 });
+  try {
+    const rows = [];
+    for (let i = 0; i < 10; i += 1) {
+      rows.push(JSON.stringify({
+        at: `2026-10-30 1${i}:00:00`, feeling: `第${i}条`, level: 5, why_ref: '', why_kind: 'ref', decay: null,
+      }));
+    }
+    await writeFile(join(h.stateDir, 'mood.jsonl'), `${rows.join('\n')}\n`);
+    await writeFile(join(h.stateDir, 'control.jsonl'),
+      `${JSON.stringify({ at: 'x', action: 'void', target: '2026-10-30 19:00:00', reason: '作废最后一条' })}\n`);
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const mood = out.sections.find((s) => s.name === 'realheart:mood');
+    assert.match(mood.text, /第8条/, '没回落到窗口内的上一条');
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});

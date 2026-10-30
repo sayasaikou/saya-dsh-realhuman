@@ -38,6 +38,8 @@ export const DEFAULTS = {
   injectMood: true,
   // 注入的总字数上限。超了就从优先级低的那段开始裁，裁掉的会留痕（M1-6）。
   injectBudgetChars: 1200,
+  // 注入时只读心情账本的最后 N 条。账本长大了不该整份读进来（M1-4）。
+  moodTailLines: 200,
   // 观测页：默认只在 127.0.0.1 上开，手机想看自己去反代或改 pageBind
   servePage: true,
   pagePort: 8098,
@@ -72,6 +74,7 @@ export const Config = Schema.object({
   indexTtlMs: Schema.number().min(RANGES.indexTtlMs.min).max(RANGES.indexTtlMs.max).default(DEFAULTS.indexTtlMs),
   injectMood: Schema.boolean().default(DEFAULTS.injectMood),
   injectBudgetChars: Schema.number().min(200).max(20000).default(DEFAULTS.injectBudgetChars),
+  moodTailLines: Schema.number().min(0).max(100000).default(DEFAULTS.moodTailLines),
   servePage: Schema.boolean().default(DEFAULTS.servePage),
   pagePort: Schema.number().min(RANGES.pagePort.min).max(RANGES.pagePort.max).default(DEFAULTS.pagePort),
   pageBind: Schema.string().default(DEFAULTS.pageBind),
@@ -222,6 +225,10 @@ export const FIELD_META = [
     key: 'injectBudgetChars', label: '注入字数上限', level: 'caution',
     range: '200–20000（默认 1200）',
     why: '每轮塞进提示词的总字数。超了从优先级低的那段开始裁：待改 → 没完的事 → 她留的话；心情永不裁。裁掉会记一条。调大是花钱买完整，调小是省钱买残缺。',
+  },  {
+    key: 'moodTailLines', label: '注入只读心情账本的最后几条', level: 'caution',
+    range: '0–100000（默认 200，0＝全读）',
+    why: '账本只增不改，注入每轮都要读。只读尾部是为了不让「账本变长」变成「每轮都变慢」。设 0 就每轮读全份 —— 账本很大时会明显拖慢。',
   },  {
     key: 'stateDir', label: '账本目录', level: 'danger',
     range: '绝对路径',
