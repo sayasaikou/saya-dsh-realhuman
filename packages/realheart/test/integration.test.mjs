@@ -11,7 +11,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, chmod, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, chmod, writeFile, readFile, utimes } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -318,6 +319,47 @@ test('预算够的时候一段都不裁', async () => {
     const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
     const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
     assert.ok(out.sections.some((s) => s.name === 'realheart:kept'));
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+// ── M1-3：并发写不把账本写坏 ──
+
+test('十个 add 同时进来，流水和渲染仍然一致（M1-3）', async () => {
+  const h = await boot();
+  try {
+    const add = h.tools.get('rh_pending');
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => add.execute({ action: 'add', text: `并发第${i}条` })),
+    );
+    const okCount = results.filter((r) => !String(r.text).includes('没写') && !String(r.text).includes('不一致')).length;
+
+    const events = (await readFile(join(h.stateDir, 'pending.jsonl'), 'utf8'))
+      .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+    const md = await readFile(join(h.stateDir, 'pending.md'), 'utf8');
+    // 关键判据：渲染必须等于流水回放 —— 不要求 10 条都成功，要求「成功的那些没把账写坏」
+    const { replay, render } = await import('../lib/pending.mjs');
+    assert.equal(md, render(replay(events)), 'pending.md 和流水分家了');
+    assert.ok(events.length >= 1, '一条都没写进去');
+    assert.equal(okCount, events.filter((e) => e.action === 'add').length, '成功条数和流水条数对不上');
+    // 锁文件要清干净，不然下次写不进去
+    assert.equal(existsSync(join(h.stateDir, 'pending.lock')), false, '锁没释放');
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('过期的锁不会把账本永久卡死（崩溃残留）', async () => {
+  const h = await boot();
+  try {
+    const lock = join(h.stateDir, 'pending.lock');
+    await writeFile(lock, 'stale');
+    // 把锁的 mtime 往前拨 20 秒，模拟上次崩溃留下的
+    const old = new Date(Date.now() - 20000);
+    await utimes(lock, old, old);
+    const r = await h.tools.get('rh_pending').execute({ action: 'add', text: '锁过期之后写的' });
+    assert.ok(!String(r.text).includes('占着'), `被过期锁卡住了：${r.text}`);
+    assert.equal(existsSync(lock), false, '过期锁没被清掉');
   } finally {
     await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }

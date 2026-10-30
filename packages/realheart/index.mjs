@@ -25,7 +25,7 @@ import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open, stat, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -301,26 +301,75 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /**
+   * 账本的写锁（M1-3）。
+   *
+   * 竞态在哪：`commitPendingEvent` 是「读全部事件 → 回放 → 渲染 → 写回」。
+   * append 本身是原子的，但**这一段不是** —— 两个会话同时 add，后写的那个是基于旧快照算的，
+   * 结果就是 `pending.md` 和流水分家，而分家的账本一直在骗人（还骗得很自然）。
+   *
+   * 为什么用锁文件而不是「改成只追加」：只追加会把渲染失败的成本推给读的人，
+   * 而这里读的人就是她 —— 每轮都要算一遍，算错了还没有人告诉她。
+   *
+   * ⚠️ 锁会过期：进程崩了锁文件留在那儿，不处理的话账本从此写不进。
+   * 超过 10 秒就当它是上次崩溃留下的，删掉重来。
+   */
+  const lockPath = () => join(cfg.stateDir, 'pending.lock');
+  async function withLock(fn, { tries = 40, gapMs = 25, staleMs = 10000 } = {}) {
+    for (let i = 0; i < tries; i += 1) {
+      let handle = null;
+      try {
+        handle = await open(lockPath(), 'wx');
+      } catch (err) {
+        if (err?.code !== 'EEXIST') throw err;
+        try {
+          const st = await stat(lockPath());
+          if (Date.now() - st.mtimeMs > staleMs) {
+            await unlink(lockPath()).catch(() => {});
+            continue; // 当它过期，立刻再试
+          }
+        } catch {
+          /* 锁刚好被释放，重试 */
+        }
+        await sleep(gapMs);
+        continue;
+      }
+      try {
+        await handle.close();
+      } catch {
+        /* 关不掉也不影响持有锁 */
+      }
+      try {
+        return await fn();
+      } finally {
+        await unlink(lockPath()).catch(() => {});
+      }
+    }
+    return { ok: false, error: `账本被另一个进程占着（重试 ${tries} 次没等到），这次没写` };
+  }
+
   /** 写一条事件 → 重放 → 渲染 → 回放校验 → 落盘。返回 { ok, state, error } */
   async function commitPendingEvent(ev) {
-    const events = await readPendingEvents();
-    const next = pendingApply(pendingReplay(events), ev);
-    if (!next) return { ok: false, error: '这条事件没通过校验（动作非法 / 引用找不到 / 重复）' };
-    const withNew = [...events, ev];
-    const replayState = pendingReplay(withNew);
-    const text = pendingRender(replayState);
-    if (pendingRender(next) !== text) {
-      return { ok: false, error: '回放结果与本次状态不一致，已放弃这次写入' };
-    }
-    try {
-      await appendFile(pendingLog(), `${JSON.stringify(ev)}\n`, 'utf8');
-      await writeFile(pendingFile(), text, 'utf8');
-      const back = await readFile(pendingFile(), 'utf8');
-      if (back !== text) return { ok: false, error: '落盘后回读不一致' };
-    } catch (err) {
-      return { ok: false, error: `写不进 pending 账本：${err?.message ?? err}` };
-    }
-    return { ok: true, state: replayState };
+    return withLock(async () => {
+      const events = await readPendingEvents();
+      const next = pendingApply(pendingReplay(events), ev);
+      if (!next) return { ok: false, error: '这条事件没通过校验（动作非法 / 引用找不到 / 重复）' };
+      const withNew = [...events, ev];
+      const replayState = pendingReplay(withNew);
+      const text = pendingRender(replayState);
+      if (pendingRender(next) !== text) {
+        return { ok: false, error: '回放结果与本次状态不一致，已放弃这次写入' };
+      }
+      try {
+        await appendFile(pendingLog(), `${JSON.stringify(ev)}\n`, 'utf8');
+        await writeFile(pendingFile(), text, 'utf8');
+        const back = await readFile(pendingFile(), 'utf8');
+        if (back !== text) return { ok: false, error: '落盘后回读不一致' };
+      } catch (err) {
+        return { ok: false, error: `写不进 pending 账本：${err?.message ?? err}` };
+      }
+      return { ok: true, state: replayState };
+    });
   }
 
   let cache = { at: 0, ids: new Set(), note: '' };
