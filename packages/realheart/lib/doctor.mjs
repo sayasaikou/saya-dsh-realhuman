@@ -11,7 +11,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { readFile, writeFile, unlink, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, unlink, mkdir, stat, readdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
@@ -111,12 +111,17 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
   } else {
     add('ok', '运行时', `config.json 在（端口 ${pagePort}，绑定 ${pageBind}）`);
     // 口令的权限：config.json 里是明文 secret，别人可读就等于口令泄漏。
+    // Windows 上 chmod 只动只读位，报个 666 出来是假警报 —— 假警报多了，真的也会被忽略。
     try {
-      const st = await stat(cfgPath);
-      const mode = st.mode & 0o777;
-      add(mode === 0o600 ? 'ok' : 'warn', '口令文件权限',
-        `config.json 是 ${mode.toString(8)}`,
-        mode === 0o600 ? '' : '里面有 48 位明文口令。chmod 600 ' + cfgPath);
+      if (process.platform === 'win32') {
+        add('ok', '口令文件权限', 'Windows 上 chmod 只管只读位，这条查不了（靠目录所在盘的 ACL）');
+      } else {
+        const st = await stat(cfgPath);
+        const mode = st.mode & 0o777;
+        add(mode === 0o600 ? 'ok' : 'warn', '口令文件权限',
+          `config.json 是 ${mode.toString(8).slice(-3)}`,
+          mode === 0o600 ? '' : '里面有明文口令。chmod 600 ' + cfgPath);
+      }
     } catch {
       add('warn', '口令文件权限', 'stat 不到', 'chmod 600 ' + cfgPath);
     }
@@ -149,7 +154,35 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     }
   }
 
-  // ── 5. 端口 ──
+  // ── 5. 账本权限（P-4：账本目录 600）──
+  // 这里每一样都是她写过的话。同机器上的别的账号顺手能读，是不该有的默认。
+  if (stateDir) {
+    if (process.platform === 'win32') {
+      add('ok', '账本权限', 'Windows 上 chmod 只管只读位，这条查不了（靠目录所在盘的 ACL）');
+    } else {
+      try {
+        const dst = await stat(stateDir);
+        const dirMode = dst.mode & 0o777;
+        const loose = [];
+        for (const f of await readdir(stateDir)) {
+          if (!/\.(jsonl|md)$/.test(f)) continue;
+          const fst = await stat(join(stateDir, f));
+          if ((fst.mode & 0o077) !== 0) loose.push(f);
+        }
+        if ((dirMode & 0o077) !== 0 || loose.length) {
+          add('warn', '账本权限',
+            `目录 ${dirMode.toString(8).slice(-3)}${loose.length ? `，${loose.length} 个文件同组/其他人还能读` : ''}`,
+            `chmod 700 ${stateDir}；文件 chmod 600（插件每次启动会自己收一次，收不上来说明没权限）`);
+        } else {
+          add('ok', '账本权限', `目录 ${dirMode.toString(8).slice(-3)}，文件都是 600`);
+        }
+      } catch (err) {
+        add('warn', '账本权限', `查不了（${err?.code ?? err?.message ?? err}）`, '看 stateDir 在不在、能不能 stat');
+      }
+    }
+  }
+
+  // ── 6. 端口 ──
   const listening = await portOpen(pageBind === '0.0.0.0' ? '127.0.0.1' : pageBind, pagePort);
   if (!listening) {
     add('warn', `端口 ${pagePort}`, '没有人在听',
@@ -169,7 +202,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       ok ? '' : '改 pagePort 换一个端口，或者把占着它的进程停掉');
   }
 
-  // ── 6. 口令有没有漏进日志 ──
+  // ── 7. 口令有没有漏进日志 ──
   // 这条能查，是因为「口令不进日志」现在是代码不是嘱咐（lib/secrets.mjs + 测试）。
   // 但历史日志里可能已经漏过了 —— 改成打码只挡住以后，挡不住以前。
   if (secret) {
@@ -192,7 +225,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     }
   }
 
-  // ── 7. 账本有没有坏行 ──
+  // ── 8. 账本有没有坏行 ──
   // 走到这里还没有 stateDir，说明运行时配置根本不存在 —— 后面几项（账本、渲染、注入）
   // 都是「不知道该查哪个目录」。**不猜**：猜错会往别人家里建目录或者读别人的账本。
   if (!stateDir) {
@@ -212,7 +245,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     else add('ok', name, `${r.rows.length} 条，没有坏行`);
   }
 
-  // ── 8. 流水与渲染对不对得上 ──
+  // ── 9. 流水与渲染对不对得上 ──
   // 这是这套东西里唯一一处「文件是派生的」：pending.md 必须等于流水回放出来的样子。
   // 分家了它就一直在骗人，而且骗得很自然。
   if (!pend.missing) {
@@ -228,7 +261,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     }
   }
 
-  // ── 9. 今天注入成功过没有 ──
+  // ── 10. 今天注入成功过没有 ──
   const liPath = join(stateDir, 'last-inject.md');
   if (!existsSync(liPath)) {
     add('warn', '注入', '没有 last-inject.md', '说明这个插件还没在会话里跑过一轮，或者从不写盘');
@@ -245,7 +278,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       fresh ? (hasPending ? '' : '注入里没有待办那一段：injectMood 关了？还是被预算裁掉了？') : '一天内没有注入过 —— 没人在说话，或者注入那一路坏了');
   }
 
-  // ── 10. 注入有没有少过段（M1-11：不许静默少一路）──
+  // ── 11. 注入有没有少过段（M1-11：不许静默少一路）──
   const probPath = join(stateDir, 'inject-problems.log');
   if (!existsSync(probPath)) {
     add('ok', '注入失败记录', '没有少过段');
@@ -257,7 +290,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       '每一次都是「少了一段但没挡住说话」。哪个环节：mood / pending-change / pending / all —— 对着那个环节查');
   }
 
-  // ── 11. 删过什么（M1-9）──
+  // ── 12. 删过什么（M1-9）──
   // 删掉的内容不会回来，但「删过什么」这句话必须还在 —— 它存在被删内容之外。
   const forgetLog = join(dshHome, 'realheart', 'forget-log.md');
   if (!existsSync(forgetLog)) {

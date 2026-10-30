@@ -935,12 +935,52 @@ export function apply(ctx, config = {}) {
     if (typeof timer.unref === 'function') timer.unref();
     log(`下一次自由时间：${next.toLocaleString()}`);
   }
+  /**
+   * 把账本收成只有自己读得到（P-4 那条「账本目录 600」）。
+   *
+   * 为什么在插件里做，而不是写在 README 让人自己 chmod：
+   * 装的人照文档走一遍就走了，不会记得回来收权限。而这里每一样都是她写过的话 ——
+   * 同机器上的别的账号顺手就能读，是不该有的默认。
+   *
+   * 平台差异要说清，不能假装做到了：Linux/macOS 上 0o700 / 0o600 是真的；
+   * Windows 上 chmod 只动只读位，等于没效果 —— 那时就明说「这条在这台机器上不管用」。
+   */
+  async function tightenStatePerms() {
+    if (process.platform === 'win32') {
+      log('账本权限：这台是 Windows，chmod 只管只读位，等于没做 —— 靠目录所在盘的 ACL');
+      return;
+    }
+    try {
+      await chmod(cfg.stateDir, 0o700);
+    } catch (err) {
+      // 不致命：读不到它的账户本来就是同一个用户，收不收权限不影响她自己用
+      log(`账本目录权限没设上（${err?.code ?? err?.message ?? err}）`, 'error');
+    }
+    let files = 0;
+    try {
+      for (const f of await readdir(cfg.stateDir)) {
+        if (!/\.(jsonl|md)$/.test(f)) continue;
+        try {
+          await chmod(join(cfg.stateDir, f), 0o600);
+          files += 1;
+        } catch {
+          /* 单个文件失败就跳过，不为它中断 */
+        }
+      }
+    } catch (err) {
+      log(`读不了账本目录，权限没收（${err?.message ?? err}）`, 'error');
+      return;
+    }
+    log(`账本权限：目录 700，${files} 个文件 600`);
+  }
+
   (async () => {
     try {
       await mkdir(cfg.stateDir, { recursive: true });
     } catch (err) {
       log(`建不了 stateDir ${cfg.stateDir}: ${err?.message ?? err}`, 'error');
     }
+    await tightenStatePerms();
     await ensureChangesDoc();
 
     if (cfg.freeTime !== false) {
