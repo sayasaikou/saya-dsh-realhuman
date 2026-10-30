@@ -137,12 +137,19 @@ function install(opts) {
   }
 
   // ③ 装完之后先干什么。用户大概率不看 README，这四句就是他能拿到的全部指引。
+  //    免责那两条紧跟在后面 —— 不是法律条款，是「装上之后你会发现什么」。
   console.log('');
   say('装好了。接着做这四件：');
   say('  1. 重启 dsh —— 配置不热生效（重启会打断正在说话的会话，挑个没人用的时候）');
   say('  2. 重启后先验一条：日志里出现 rh_mood / rh_pending / rh_control / rh_changes 已注册');
   say('  3. 头一周只开观测：把 injectMood 设成 false，先看它记了什么，别急着让它影响说话');
   say('  4. 出事一条命令退：sh scripts/uninstall.sh --profile ' + profileName + ' --dry-run');
+  console.log('');
+  say('三件得先说清楚：');
+  say('  · 适用范围：只推荐私聊与少数固定人员。群聊没做深，效果和后果不作保证。');
+  say('  · 它每轮都会往系统提示里塞状态（花 token）；写账本记的是原文（目前还没有只记摘要的开关）。');
+  say('  · 它只注入状态，不注入人格 —— 人格是装它的人的责任，它不替那份人格担保。');
+  say('随时自检：npx realheart doctor');
 }
 
 const argv = process.argv.slice(2);

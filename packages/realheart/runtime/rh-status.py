@@ -305,9 +305,13 @@ CSS = """
 body{margin:0;background:#0e1014;color:#e6e8ec;
 font:15px/1.65 system-ui,-apple-system,"Segoe UI","Noto Sans CJK SC",sans-serif}
 .wrap{max-width:1080px;margin:0 auto;padding:26px 18px 60px}
-header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:22px}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px}
 h1{font-size:22px;margin:0;font-weight:650;letter-spacing:.5px}
 .sub{color:#8b929c;font-size:13px}
+/* 适用范围那一条：装的人第一眼要看得到的，不是藏在 README 里 */
+.notice{margin:0 0 22px;padding:11px 14px;border:1px solid #3a3220;background:#1a1812;
+color:#d9c99c;border-radius:10px;font-size:12.5px;line-height:1.7}
+.notice b{color:#f0dfae;font-weight:600}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
 .card{background:#161920;border:1px solid #222832;border-radius:14px;padding:18px 18px 16px}
 .card h2{font-size:13px;margin:0 0 12px;color:#9aa3b0;font-weight:600;letter-spacing:1.2px}
@@ -928,6 +932,7 @@ PAGE = """<!doctype html><html lang="zh"><meta charset="utf-8">
   <h1>她</h1>
   <div class="sub">只读观测页 · v%(version)s · 数据时间 %(now)s</div>
 </header>
+<div class="notice"><b>适用范围：</b>目前仅推荐私聊与少数固定人员使用；群聊能力未经深度开发与测试，效果和后果不作保证。</div>
 <div class="grid">
 %(cards)s
 </div>
