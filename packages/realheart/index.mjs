@@ -435,8 +435,20 @@ export function apply(ctx, config = {}) {
           out.paused = false;
           out.reason = String(obj.reason || '');
         } else if (obj.action === 'void') {
-          const t = Number(obj.target);
-          if (Number.isInteger(t) && t > 0) out.voided.set(t, String(obj.reason || ''));
+          // 作废的键有两种，都收：
+          //   · 老的整数行号 —— 兼容已经写在盘上的记录
+          //   · 新的 `at` 字符串 —— **稳定标识**，账本截断/归档之后依然指得准
+          //
+          // 为什么非改不可（M1-4 的前置）：行号是「第几条」，只要账本被裁剪过，
+          // 同一个行号指向的就变成另一条心情了 —— 那会把「被他作废的那条」当成有效的。
+          const reason = String(obj.reason || '');
+          const raw = obj.target;
+          if (typeof raw === 'string' && raw.trim()) {
+            out.voided.set(raw.trim(), reason);
+          } else {
+            const t = Number(raw);
+            if (Number.isInteger(t) && t > 0) out.voided.set(t, reason);
+          }
         }
       }
     } catch {
@@ -504,11 +516,14 @@ export function apply(ctx, config = {}) {
     const rows = await readMood();
     if (!rows.length) return '';
 
-    // 从最后一笔往前找，跳过被他作废的
+    // 从最后一笔往前找，跳过被他作废的。
+    // 两种键都要看：行号（老记录）和 at（新记录，不受截断影响）。
     let last = null;
     for (let i = rows.length; i >= 1; i -= 1) {
+      const row = rows[i - 1];
       if (ctl.voided.has(i)) continue;
-      last = rows[i - 1];
+      if (row?.at && ctl.voided.has(String(row.at))) continue;
+      last = row;
       break;
     }
     if (!last) return '';

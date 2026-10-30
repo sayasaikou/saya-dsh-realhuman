@@ -293,6 +293,63 @@ async function moodOverride(opts) {
   say('她下一轮开口就能看到（心情每轮都读，不用重启）。');
 }
 
+/**
+ * 作废一条心情（他的权限，不是她的）。
+ *
+ * 为什么写进命令而不是给她一个工具动作：作废是「这份账里有一条不算」——
+ * 记账的人不该能给自己划掉一条。他能，因为他不是被记的那个人。
+ *
+ * 键用 `at` 而不是行号：行号是「第几条」，账本一旦被裁剪/归档，
+ * 同一个行号指向的就变成另一条心情了。at 不会。
+ */
+async function voidMood(opts) {
+  const stateDir = await resolveStateDir(opts);
+  if (!stateDir) fail('不知道账本在哪。明说：realheart void --state-dir <账本目录>');
+  const moodPath = join(stateDir, 'mood.jsonl');
+  if (!existsSync(moodPath)) fail('没有心情账本（mood.jsonl），没什么可作废的');
+
+  const rows = [];
+  for (const line of (await readFile(moodPath, 'utf8')).split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try { rows.push(JSON.parse(t)); } catch { /* 坏行跳过 */ }
+  }
+  if (!rows.length) fail('心情账本是空的');
+
+  // 行号要按「整个账本里的第几条」算。之前写成了 rows.length - n + i，
+  // 账本不足 n 条时会算出负数（显示成 [-1][0][1]）—— 列出来让人照着敲的东西，错一位就没用。
+  const show = (n = 5) => {
+    const start = Math.max(0, rows.length - n);
+    return rows.slice(start).map((r, i) => `  [${start + i + 1}] ${r.at}  ${r.feeling ?? ''}（浓 ${r.level ?? '?'}）`).join('\n');
+  };
+
+  let target = '';
+  if (opts.at) {
+    const hit = rows.find((r) => String(r.at) === String(opts.at).trim());
+    if (!hit) fail(`没有 at 是「${opts.at}」的那一条。最近几条：\n${show()}`);
+    target = String(hit.at);
+  } else if (opts.index) {
+    const i = Number(opts.index);
+    if (!Number.isInteger(i) || i < 1 || i > rows.length) fail(`行号要在 1–${rows.length} 之间。最近几条：\n${show()}`);
+    target = String(rows[i - 1].at);
+  } else {
+    target = String(rows[rows.length - 1].at);
+    say(`没指定 --at / --index，默认作废最后一条：${target}`);
+  }
+
+  if (!opts.why) fail('缺 --why。作废一条心情是要留账的事，得写清为什么');
+  if (!opts.yes) {
+    if (process.stdin.isTTY) fail('没确认。加 --yes 表示确实要作废');
+    fail('非交互环境要加 --yes。什么都没动');
+  }
+
+  const at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  await mkdir(stateDir, { recursive: true });
+  await appendFile(join(stateDir, 'control.jsonl'),
+    `${JSON.stringify({ at, action: 'void', target, reason: String(opts.why).trim(), by: 'owner' })}\n`, 'utf8');
+  say(`作废了 at=${target} 那一条。它还在账本里，只是不再被注入 —— 作废不等于删除。`);
+  say('下一轮注入就跳过它（不用重启）。');
+}
 const KILL = join(DSH_HOME, 'realheart', 'DISABLED');
 
 function switchOff() {
@@ -450,7 +507,7 @@ async function forget(opts) {
 }
 
 const argv = process.argv.slice(2);
-const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false, path: '', why: '', feeling: '', level: '', ack: false };
+const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false, path: '', why: '', feeling: '', level: '', ack: false, at: '', index: '' };
 const rest = [];
 for (let i = 0; i < argv.length; i += 1) {
   const a = argv[i];
@@ -461,6 +518,8 @@ for (let i = 0; i < argv.length; i += 1) {
   else if (a === '--out') opts.out = argv[++i] ?? '';
   else if (a === '--path') opts.path = argv[++i] ?? '';
   else if (a === '--why') opts.why = argv[++i] ?? '';
+  else if (a === '--at') opts.at = argv[++i] ?? '';
+  else if (a === '--index') opts.index = argv[++i] ?? '';
   else if (a === '--feeling') opts.feeling = argv[++i] ?? '';
   else if (a === '--level') opts.level = argv[++i] ?? '';
   else if (a === '--i-know-this-is-not-her-feeling') opts.ack = true;
@@ -483,6 +542,7 @@ else if (cmd === 'on') switchOn();
 else if (cmd === 'export') await exportData(opts);
 else if (cmd === 'wipe') await wipe(opts);
 else if (cmd === 'forget') await forget(opts);
+else if (cmd === 'void') await voidMood(opts);
 else if (cmd === 'mood-override') await moodOverride(opts);
 else if (cmd === 'help') usage();
 else {

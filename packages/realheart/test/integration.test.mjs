@@ -364,3 +364,52 @@ test('过期的锁不会把账本永久卡死（崩溃残留）', async () => {
     await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
+// ── 作废：用稳定键（M1-4 的前置）──
+
+test('作废之后那条不再被注入，但它还在账本里（作废≠删除）', async () => {
+  const h = await boot();
+  try {
+    const at = '2026-10-30 22:00:00';
+    await writeFile(
+      join(h.stateDir, 'mood.jsonl'),
+      `${JSON.stringify({ at, feeling: '不想提的那句', level: 8, why_ref: '', why_kind: 'ref', decay: null })}\n`,
+    );
+    await writeFile(
+      join(h.stateDir, 'control.jsonl'),
+      `${JSON.stringify({ at: '2026-10-30 22:05:00', action: 'void', target: at, reason: '她自己说这条不算', by: 'owner' })}\n`,
+    );
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    assert.equal(out.sections.find((s) => s.name === 'realheart:mood'), undefined, '作废的那条还在注入里');
+
+    // 账本原文没动
+    const raw = await readFile(join(h.stateDir, 'mood.jsonl'), 'utf8');
+    assert.match(raw, /不想提的那句/);
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('老的行号作废记录还认（不能因为改了键就把旧账读错）', async () => {
+  const h = await boot();
+  try {
+    const rows = [
+      { at: '2026-10-30 20:00:00', feeling: '第一条', level: 3, why_ref: '', why_kind: 'ref', decay: null },
+      { at: '2026-10-30 21:00:00', feeling: '第二条', level: 4, why_ref: '', why_kind: 'ref', decay: null },
+    ];
+    await writeFile(join(h.stateDir, 'mood.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    // 老格式：target 是行号 2（作废「第二条」）
+    await writeFile(
+      join(h.stateDir, 'control.jsonl'),
+      `${JSON.stringify({ at: '2026-10-30 21:05:00', action: 'void', target: 2, reason: '老记录' })}\n`,
+    );
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const mood = out.sections.find((s) => s.name === 'realheart:mood');
+    assert.ok(mood, '应该回落到第一条');
+    assert.match(mood.text, /第一条/);
+    assert.ok(!mood.text.includes('第二条'), '行号作废没生效');
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
