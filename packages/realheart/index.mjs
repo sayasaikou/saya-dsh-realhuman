@@ -560,8 +560,9 @@ export function apply(ctx, config = {}) {
     });
   }
   async function ensureRuntime() {
-    console.log(`观测页配置：servePage=${cfg.servePage} port=${cfg.pagePort} bind=${cfg.pageBind}`);
+    // 关了观测页就什么都不做，也什么都不打印 —— 关掉是正常配置，不是要报告的异常
     if (cfg.servePage === false) return '';
+    log(`观测页配置：port=${cfg.pagePort} bind=${cfg.pageBind}`);
     const dir = join(DSH_HOME, 'realheart', 'runtime');
     const hereDir = dirname(fileURLToPath(import.meta.url));
     const srcDir = join(hereDir, 'runtime');

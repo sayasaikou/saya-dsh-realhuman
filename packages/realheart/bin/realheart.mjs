@@ -38,13 +38,27 @@ function usage() {
 
 用法：
   npx ${PKG} install [--profile <名字|路径>] [--dry-run]
+  npx ${PKG} doctor
   node node_modules/${PKG}/bin/${PKG}.mjs install --profile qqbot
 
 选项：
   --profile   装到哪个 profile。省掉就用当前目录（当前目录得正好是 profile）
   --dry-run   只说要做什么，不动手
 
+doctor：一条命令回答「在不在工作 / 哪坏了 / 怎么修」。只读，不改任何东西。
+
 装完之后：重启 dsh。想卸：sh scripts/uninstall.sh --profile <名字>`);
+}
+
+async function doctor() {
+  const { runDoctor, formatDoctor } = await import('../lib/doctor.mjs');
+  const r = await runDoctor({ dshHome: DSH_HOME });
+  console.log('');
+  console.log(`realheart doctor · DSH_HOME=${DSH_HOME}`);
+  console.log('');
+  console.log(formatDoctor(r));
+  // 有 FAIL 就非零退出 —— 这样脚本里可以直接 if npx realheart doctor; then ...
+  process.exit(r.summary.fail ? 1 : 0);
 }
 
 /** 三个来源：显式路径 → profile 名字 → 当前目录。不猜。 */
@@ -145,6 +159,7 @@ for (let i = 0; i < argv.length; i += 1) {
 
 const cmd = rest[0] || 'install';
 if (cmd === 'install') install(opts);
+else if (cmd === 'doctor') doctor();
 else if (cmd === 'help') usage();
 else {
   console.error(`[realheart] 不认识这个子命令：${cmd}`);

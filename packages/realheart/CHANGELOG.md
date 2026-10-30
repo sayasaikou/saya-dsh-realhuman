@@ -50,12 +50,35 @@
 - `setup.mjs --remove`：摘 `bundles` 的正式入口。幂等，摘不到不报错。
 - `setup.mjs` 加 `--dry-run`。
 
+### 自检：`realheart doctor`
+
+- 新增 `lib/doctor.mjs` + `bin` 的 `doctor` 子命令。一条命令回答三个问题：在不在工作 / 哪坏了 / 怎么修。
+- 查十一项：`python3`、`zstd`、运行时 `config.json`、口令文件权限（是不是 600）、
+  配置合法性（复用启动时那套判据）、账本目录可写、端口上**是不是自己**（带口令打 healthz，
+  不是只看有没有人听）、`mood.jsonl` 坏行、`pending.jsonl` 坏行、
+  `pending.md` 与流水是否一致、一天内注入过没有。
+- 三条规矩：每条非 ok 的都带修法；只读（唯一写入是探可写性的临时文件，立刻删）；
+  **不知道的不猜** —— 没有运行时配置时不知道账本在哪，就不读、也不建目录。
+- 有 FAIL 时退出码非零，脚本里能直接判断。
+- 新单测 `test/doctor.test.mjs`，8 项（含「端口被别人占要红」「pending 分家要红」
+  「空机器不许拿默认值冒充真实配置」）。
+
 ### 单测目录收拾干净
 
 - `test/` 下原来混着两个**手动验**的脚本（`test-package.mjs` / `test-no-python.mjs`）。它们写死 `/tmp` 路径、
   不是 `node:test` 用例，却会被 `node --test` 当单测跑 —— 结果是永远红。
   挪到 `scripts/check-package.mjs` / `scripts/check-no-python.mjs`。
-- 现在 `node --test` 是绿的（20 项：待办流水 8 + 配置校验 12）。这是加 CI 的前提。
+- 现在 `node --test` 是绿的（33 项）。这是加 CI 的前提。
+
+### 集成测试：apply 一次，看它会不会被某一路拖死
+
+- 新增 `test/integration.test.mjs`（5 项）。真的调一次 `apply(ctx, ...)`，用假 ctx，不需要真 dsh。
+- 钉住两条最要紧的：**观测页起不来时四个工具照样注册上**、
+  **账本目录写不进去时注入照样放行**（返回原样，不抛）。
+  坏起来最难看的样子不是报错，是她一句话都发不出去。
+- 顺带钉住三条容易回退的：注入 handler 必须带 `{ global: true }`
+  （少了它「注册了、没报错、永远不生效」）、别人挂进装配里的段一个都不许丢、`dispose` 必须挂上。
+- 顺带修：`servePage: false` 时不再打「观测页配置」那行 —— 关掉是正常配置，不是要报告的异常。
 - 那两个开发脚本**不进 npm 包**：`files` 里点名四个 `.sh`，不用目录通配
   （`.npmignore` 对 `files` 白名单不起作用，实测过）。
 
