@@ -19,11 +19,10 @@
  * 那件事机器判定不了，硬判就是另一种演。先把门立起来，真假留给时间看。
  */
 
-import Schema from '@deepseek-ai/schemastery';
+import { Config, DEFAULTS, DSH_HOME, QQROOT, validateConfig } from './lib/config.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -168,56 +167,38 @@ async function waitForTools(ctx, tries = 40, gapMs = 250) {
 
 export const name = 'realheart';
 
-const QQROOT = join(os.homedir(), 'qqbot');
-const DSH_HOME = process.env.DSH_HOME || join(os.homedir(), '.dsh');
-
-const DEFAULTS = {
-  enabled: true,
-  // 帐本、状态文件所在目录
-  stateDir: join(QQROOT, 'work', 'realheart'),
-  // 三路事件源
-  sessionsRoot: join(DSH_HOME, 'sessions'),
-  auditDir: join(QQROOT, 'data', 'audit'),
-  historyDir: join(QQROOT, 'data', 'history'),
-  // 索引多久重建一次（毫秒）。默认一小时。
-  indexTtlMs: 3600000,
-  // 每轮开口前把当前心情注入提示词
-  injectMood: true,
-  // 观测页：默认只在 127.0.0.1 上开，手机想看自己去反代或改 pageBind
-  servePage: true,
-  pagePort: 8098,
-  pageBind: '127.0.0.1',
-  // 首次运行提示只打一次（标记文件在 stateDir 下）
-  announceOnInstall: true,
-  // 自由时间：每天叫醒她一次。不用 systemd、不要 root。
-  freeTime: true,
-  freeTimeProfile: 'freetime',
-  freeTimeFrom: 10,
-  // 她的人格目录（freetime profile 用同一份，不另写一套）
-  personaHome: join(QQROOT, 'home'),
-};
-
-export const Config = Schema.object({
-  enabled: Schema.boolean().default(DEFAULTS.enabled),
-  stateDir: Schema.string().default(DEFAULTS.stateDir),
-  sessionsRoot: Schema.string().default(DEFAULTS.sessionsRoot),
-  auditDir: Schema.string().default(DEFAULTS.auditDir),
-  historyDir: Schema.string().default(DEFAULTS.historyDir),
-  indexTtlMs: Schema.number().default(DEFAULTS.indexTtlMs),
-  injectMood: Schema.boolean().default(DEFAULTS.injectMood),
-  servePage: Schema.boolean().default(DEFAULTS.servePage),
-  pagePort: Schema.number().default(DEFAULTS.pagePort),
-  pageBind: Schema.string().default(DEFAULTS.pageBind),
-  announceOnInstall: Schema.boolean().default(DEFAULTS.announceOnInstall),
-  freeTime: Schema.boolean().default(DEFAULTS.freeTime),
-  freeTimeProfile: Schema.string().default(DEFAULTS.freeTimeProfile),
-  freeTimeFrom: Schema.number().default(DEFAULTS.freeTimeFrom),
-  personaHome: Schema.string().default(DEFAULTS.personaHome),
-});
+// 配置（默认值 / Schema / 校验）全部在 lib/config.mjs。
+// 搬出去的理由只有一个：那份不 import 宿主，能单测 —— 配置写错的表现是「起不来」，
+// 而「起不来」这件事没法在跑着的 dsh 里测。
+export { Config };
 
 export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...config };
   if (cfg.enabled === false) return;
+
+  // ── 启动前校验 ──
+  // 带着错配置跑，坏的不只是那一处：端口被占会让人以为「页面挂了」，
+  // 相对路径会让账本写到一个谁也找不到的地方。所以宁可拒绝启动。
+  //
+  // 一次报全部，不是报第一个 —— 改一个重启一次，每次重启都会打断正在说话的会话。
+  const problems = validateConfig(cfg);
+  if (problems.length) {
+    const line = (m) => {
+      try {
+        if (typeof ctx.logger?.error === 'function') ctx.logger.error(m);
+        else console.error(m);
+      } catch {
+        /* 连日志都打不出去时，下面的 throw 仍然是证据 */
+      }
+    };
+    line(`[realheart] 配置有 ${problems.length} 处不对，拒绝启动。改完重启。`);
+    for (const p of problems) {
+      line(`[realheart]   · ${p.key} = ${JSON.stringify(p.value)} —— ${p.reason}`);
+      line(`[realheart]     怎么改：${p.fix}`);
+    }
+    throw new Error(`realheart 配置有 ${problems.length} 处不对（详见日志），拒绝启动`);
+  }
+
   const log = (msg, level = 'info') => {
     const line = `[realheart] ${msg}`;
     try {

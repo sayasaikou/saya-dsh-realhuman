@@ -30,12 +30,34 @@
   `--purge` 不加 `--yes` 且在非交互环境下，也是拒绝。
 - 卸完给三条验收命令。
 
+### 配置：写错不让启动
+
+- 配置相关的东西搬到 `lib/config.mjs`（默认值 / Schema / 校验）。搬出去的理由只有一个：
+  那份不 import 宿主，能单测 —— 而配置写错的表现是「起不来」，起不来就没法在跑着的 dsh 里测。
+- 新增 `validateConfig()`：启动前把所有问题一次列出来，每条给「哪一项 / 现在是什么 / 怎么改」。
+  会被拦的：端口不在 1–65535、`indexTtlMs` < 1 分钟、`freeTimeFrom` 不在 0–23、
+  目录写成空串或相对路径、`pageBind` 不是 IP、`freeTimeProfile` 写成路径。
+  **不拦**：端口 80（合法，只是要权限）、`0.0.0.0`（合法，只是危险）——
+  合法性归校验管，风险归文档管。校验替人做决定，等于把人赶到手改文件那条更没提示的路上。
+- Schema 里补了 `min` / `max`（范围常量和 `validateConfig` 共用一份，避免两处漂移）。
+- `enabled: false` 时不校验：你要的就是关掉。
+- 新单测 `test/config.test.mjs`，12 项。
+
 ### 改动一定留痕
 
 - `setup.mjs` 在写 `package.json` 之前**自动备份**（`package.json.bak-<时间戳>`）。
   「改一次配置多一个 .bak」以前是发布判据，靠人工散着做；现在在写入口上。
 - `setup.mjs --remove`：摘 `bundles` 的正式入口。幂等，摘不到不报错。
 - `setup.mjs` 加 `--dry-run`。
+
+### 单测目录收拾干净
+
+- `test/` 下原来混着两个**手动验**的脚本（`test-package.mjs` / `test-no-python.mjs`）。它们写死 `/tmp` 路径、
+  不是 `node:test` 用例，却会被 `node --test` 当单测跑 —— 结果是永远红。
+  挪到 `scripts/check-package.mjs` / `scripts/check-no-python.mjs`。
+- 现在 `node --test` 是绿的（20 项：待办流水 8 + 配置校验 12）。这是加 CI 的前提。
+- 那两个开发脚本**不进 npm 包**：`files` 里点名四个 `.sh`，不用目录通配
+  （`.npmignore` 对 `files` 白名单不起作用，实测过）。
 
 ### 文档
 
@@ -45,10 +67,11 @@
 ### 已知没做
 
 - `rh_doctor`（一条命令自检七项）还没有。
-- 配置项的范围校验（比如非法端口应当在启动时被拒）还没有。
 - 「一处坏了不拖累整轮」没有系统审过 —— 观测页 / 索引 / TTS 各挂一次的实测没跑。
+- 人**手动**改配置（YAML / `config.json`）不入账。`changes.md` 只记插件工具改状态那一路；
+  「谁动了哪一层」的自动记账要等 P-3 那套「改动作入账」一起做。
 
-> 以上三条是 v0.2.0 发布的余下阻塞项，见 `work/2026-10-28-待动清单-汇总.md` 的 T0 ③④⑤。
+> 前两条是 v0.2.0 发布的余下阻塞项，见 `work/2026-10-28-待动清单-汇总.md` 的 T0 ④⑤。
 
 ---
 
@@ -64,7 +87,7 @@
 - **`rh_control` 多一个 `clear`**：记 `declared_clear`（我说我好了），与 `decayed`（自己淡掉）分开计数。
   混在一起算，半衰期永远算不对。
 - 单测：`node --test test/pending.test.mjs`，8 项。
-- ⚠️ **这一版没有实机验过**：源码和单测过了，`test-package.mjs` 要 Linux 路径，Windows 上跑不了。
+- ⚠️ **这一版没有实机验过**：源码和单测过了，`scripts/check-package.mjs` 要 Linux 路径，Windows 上跑不了。
 
 **已知但没修**：`qrcodeurl` 在扫码成功后不清空（NapCat 那边的事，只能绕）；
 判断要不要刷码，现在靠「有码 + 最近没人说话」这个组合。

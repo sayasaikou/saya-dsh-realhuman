@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 node_modules/
 
+# 注意：package.json 里有 `files` 白名单，那才是决定发什么的。
+# 这份 .npmignore 只在白名单内部排除杂物 —— 想排除某个具体脚本，得去改 `files` 点名。

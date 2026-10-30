@@ -96,6 +96,7 @@ python3 -V && zstd --version
 
 | 症状 | 大概率是 | 查法 |
 | --- | --- | --- |
+| 启动**直接失败**，日志里一串「配置有 N 处不对」 | 配置里有非法值：端口越界、目录写成相对路径、绑定的不是 IP、自由时间不在 0–23 | 按日志里每条的「怎么改」改完重启。见下面「配置写错了会怎样」 |
 | 装完重启，**一点反应都没有**，日志里找不到 `rh_mood / rh_pending / rh_control / rh_changes 已注册` | 包名没进 `dsh.profile.bundles`，`cordis.patch.yml` 就没被应用 | `grep -n realheart <profile>/package.json` |
 | 启动**报错**，提到 bundle / 模块找不到 | 包删了，但那行还挂在 `bundles` 里 | 同上。修：`node <profile>/node_modules/realheart/setup.mjs --remove <profile>`，或直接 `sh scripts/uninstall.sh` 再来一次 |
 | 日志打了观测页地址，**打开连不上** | ① `python3` 不在 ② 端口被别人占了 ③ python 起来了但立刻崩 | `cat $DSH_HOME/realheart/rh-status.err.log` 末尾 ／ `ss -lntp \| grep <pagePort>` |
@@ -114,6 +115,31 @@ python3 -V && zstd --version
 1. **没反应** → 看 `bundles` 有没有那行。
 2. **连不上页面** → 看 `rh-status.err.log` 末尾，别看日志开头。
 3. **少了一路数据** → 先查 `zstd`，它缺了是静默的。
+
+### 配置写错了会怎样
+
+**坏配置不让它启动。** 带着错配置跑，坏的不是那一处：端口被占会让人以为「页面挂了」，
+相对路径会让账本写到一个谁也找不到的地方，这两种都不报错，只是不对。
+
+启动时一次把**全部**问题列出来，每条三样：哪一项、现在是什么、怎么改。
+
+```
+[realheart] 配置有 2 处不对，拒绝启动。改完重启。
+[realheart]   · pagePort = 99999 —— 超出范围 1–65535
+[realheart]     怎么改：改成 1024–65535 之间的整数，默认 8098
+[realheart]   · freeTimeFrom = 25 —— 不是 0–23 的整点
+[realheart]     怎么改：改成 0–23 的整数，默认 10（上午十点之后）
+```
+
+一次报全部，不是报第一个 —— 改一个重启一次，每次重启都会打断正在说话的会话。
+
+会被拦的：端口不是 1–65535 的整数、`indexTtlMs` 小于一分钟、`freeTimeFrom` 不在 0–23、
+目录写成空串或相对路径、`pageBind` 不是 IP、`freeTimeProfile` 写成路径。
+
+**不拦的**：端口 80（合法，只是要权限）、`0.0.0.0`（合法，只是明文对公网危险）。
+合法性归校验管，风险归文档管 —— 校验替人做决定，就等于把人赶到手改文件那条更没提示的路上。
+
+`enabled: false` 时不校验：你要的就是关掉，配置对不对已经不重要了。
 
 ## 云端部署（在一台只会撞的机器上踩出来的）
 
@@ -438,7 +464,7 @@ python3 ~/qqbot/rh-status/rh-ctl.py log                     # 全部操作记录
   混在一起算，半衰期永远算不对。
 - 单测：`node --test test/pending.test.mjs`，8 项（回放逐字节一致 / 同句不重复入队 /
   无佐证的勾不进续接率 / 中位数门槛 5 / K=10 同会话 / 注入文案不含建议）。
-- ⚠️ **这一版没有实机验过**：源码和单测过了，`test-package.mjs` 要 Linux 路径，Windows 上跑不了。
+- ⚠️ **这一版没有实机验过**：源码和单测过了，`scripts/check-package.mjs` 要 Linux 路径，Windows 上跑不了。
   第一次部署按上面「装完先验三条」走。
 
 **已知但没修的**：
@@ -458,6 +484,21 @@ python3 ~/qqbot/rh-status/rh-ctl.py log                     # 全部操作记录
 | `status/config.json` | 端口 / 绑定 / 口令 / 数据根 |
 
 ## 改完怎么验
+
+**单测**（哪个平台都能跑，不用起 dsh）：
+
+```
+node --test            # 20 项：待办流水回放 / 心情闸 / 配置校验
+```
+
+**手动验的两个**（写死了 `/tmp` 路径，Linux 或 git bash 上跑）：
+
+```
+node scripts/check-package.mjs      # 打包自举：铺文件、生成口令、起观测页、连上工具（独立端口，不碰生产）
+node scripts/check-no-python.mjs    # PATH 里没有 python3 时，插件会不会把宿主崩掉
+```
+
+**跑起来之后**：
 
 ```
 python3 rh_native.py --probe        # 他的话抽出来了吗（hear/say 两个数都要有）

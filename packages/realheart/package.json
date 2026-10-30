@@ -14,7 +14,10 @@
     "setup.mjs",
     "cordis.patch.yml",
     "runtime/",
-    "scripts/",
+    "scripts/backup-before-switch.sh",
+    "scripts/rollback.sh",
+    "scripts/switch-to-package.sh",
+    "scripts/uninstall.sh",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
