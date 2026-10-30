@@ -306,6 +306,10 @@ npm publish               # 真发（开了 2FA 会要一次性码）
 - `runtime/*.py`、`scripts/*.sh`
 - `CHANGELOG.md`
 
+**清单里不该有的**：`runtime/__pycache__/`（跑过一次 Python 就会冒出来，60 KB 的编译缓存）、
+`test/`、`scripts/check-*.mjs`。`files` 白名单里 `runtime/` 写成目录就会把 `__pycache__` 一起收进去，
+所以这里写的是 `runtime/*.py`。
+
 发完在**一台干净机器**上（没装过这个包、没有 `~/.dsh/realheart`）装一次，验三条：
 包能下、`bundles` 那行加上了、重启后日志里有「已注册」那一行。
 

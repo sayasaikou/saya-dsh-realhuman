@@ -13,7 +13,7 @@
     "bin/",
     "setup.mjs",
     "cordis.patch.yml",
-    "runtime/",
+    "runtime/*.py",
     "scripts/backup-before-switch.sh",
     "scripts/rollback.sh",
     "scripts/switch-to-package.sh",
