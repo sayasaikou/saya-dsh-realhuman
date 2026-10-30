@@ -25,7 +25,7 @@ import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, writeFile, copyFile, chmod, open, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -238,6 +238,39 @@ export function apply(ctx, config = {}) {
   };
 
   const moodFile = () => join(cfg.stateDir, 'mood.jsonl');
+
+  /**
+   * 她自己留下的句子（P-6 ①）。
+   *
+   * 她的要求原话是「自己留、自己看」：她标记的那句，下一轮自动回来，
+   * **不替她筛、不带提示语**。所以这里只做两件事 —— 存、读回来。
+   *
+   * 为什么走事件流水而不是一个 growing 的 md：撤销要能留痕。
+   * 「她撤过什么」和「她留过什么」一样是信息，md 里一改就没了。
+   */
+  const keptFile = () => join(cfg.stateDir, 'kept.jsonl');
+  async function readKept() {
+    let text = '';
+    try {
+      text = await readFile(keptFile(), 'utf8');
+    } catch {
+      return [];
+    }
+    const items = new Map();
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      let o;
+      try {
+        o = JSON.parse(t);
+      } catch {
+        continue; // 坏行跳过，不拿它当数据
+      }
+      if (o?.action === 'keep' && o.id) items.set(o.id, o);
+      else if (o?.action === 'unkeep' && o.id) items.delete(o.id);
+    }
+    return [...items.values()].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  }
 
   // user 文件里被丢掉的项要说出来 —— 沉默地忽略一项配置，等于让人以为改了。
   for (const p of user.problems) log(`配置：${p}`, 'error');
@@ -523,6 +556,13 @@ export function apply(ctx, config = {}) {
           // 没完的事这一段注入失败，就少一段；不挡这一轮说话 ——
           // 但**不能没有痕迹**（M1-11）：少一路还让人以为它在工作，是最坏的坏法
           await noteInjectProblem('pending', err);
+        }
+        try {
+          const kept = await readKept();
+          // 原样呈现，不加「这是为了提醒你」之类的话 —— 她要求的就是这个
+          if (kept.length) parts.push(sec('realheart:kept', 903, ['【你留下的话】', ...kept.map((k) => `· ${k.text}`)].join('\n')));
+        } catch (err) {
+          await noteInjectProblem('kept', err);
         }
         if (!parts.length) return assembled;
         const sections = Array.isArray(assembled?.sections) ? assembled.sections : [];
@@ -1260,8 +1300,10 @@ export function apply(ctx, config = {}) {
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', description: 'pause / resume / clear（clear＝我好了，记成 declared_clear）' },
+          action: { type: 'string', description: 'pause / resume / clear / keep / unkeep / files' },
           reason: { type: 'string', description: '为什么。可以不写，但你自己以后翻记录时会想知道。' },
+          text: { type: 'string', description: 'keep 用：要留下的那句话，原样。' },
+          id: { type: 'string', description: 'unkeep 用：撤掉哪一条（先用 files 看 id）。' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -1277,10 +1319,85 @@ export function apply(ctx, config = {}) {
       },
       async execute(args) {
         const action = String(args?.action ?? '').trim();
-        if (!['pause', 'resume', 'clear'].includes(action)) {
-          return { text: '（action 只有 pause / resume / clear 三个值。）' };
+        if (!['pause', 'resume', 'clear', 'keep', 'unkeep', 'files'].includes(action)) {
+          return { text: '（action 只有 pause / resume / clear / keep / unkeep / files。）' };
         }
         const reason = String(args?.reason ?? '').trim();
+
+        // ── 留一句 / 撤掉 / 看有什么（P-6 ①②）──
+        if (action === 'keep' || action === 'unkeep' || action === 'files') {
+          try {
+            const kept = await readKept();
+            if (action === 'keep') {
+              const text = String(args?.text ?? '').trim();
+              if (!text) return { text: '（要留的那句话是空的。）' };
+              if (kept.some((k) => k.text === text)) return { text: '（这句已经留着了。）' };
+              const id = pendingFp(text);
+              await appendFile(keptFile(),
+                `${JSON.stringify({ at: localStamp(), action: 'keep', id, text, by: 'her' })}\n`, 'utf8');
+              return { text: `留着了：${text}\n下一轮它自己回来，我不动它。` };
+            }
+            if (action === 'unkeep') {
+              const id = String(args?.id ?? '').trim();
+              const text = String(args?.text ?? '').trim();
+              const hit = kept.find((k) => (id && k.id === id) || (text && k.text === text));
+              if (!hit) return { text: '（没找到这一条。用 files 看一眼 id。）' };
+              await appendFile(keptFile(),
+                `${JSON.stringify({ at: localStamp(), action: 'unkeep', id: hit.id, text: hit.text, by: 'her' })}\n`, 'utf8');
+              return { text: `撤掉了：${hit.text}\n（撤这件事也记了一笔 —— 留过什么、撤过什么，都算数。）` };
+            }
+            // files：你手里有什么
+            const lines = [];
+            lines.push(`【你留下的话】${kept.length ? '' : '（空着。）'}`);
+            for (const k of kept) lines.push(`· ${k.id}  ${k.text}`);
+
+            // 产物：pieces/ 与你自己的东西，按时间倒序，每件一句说明（取不到就写「没写说明」）
+            const dirs = [
+              [join(cfg.root || QQROOT, 'work', 'pieces'), '产物'],
+              [cfg.stateDir, '账本与记录'],
+            ];
+            for (const [dir, label] of dirs) {
+              let names = [];
+              try {
+                names = await readdir(dir);
+              } catch {
+                continue;
+              }
+              const rows = [];
+              for (const n of names) {
+                if (n.startsWith('.')) continue;
+                let st = null;
+                try {
+                  st = await stat(join(dir, n));
+                } catch {
+                  continue;
+                }
+                if (!st || st.isDirectory()) continue;
+                rows.push([n, st.mtimeMs]);
+              }
+              rows.sort((a, b) => b[1] - a[1]);
+              const top = rows.slice(0, 7);
+              lines.push('');
+              lines.push(`【${label}】${top.length ? '' : '（空着。）'}`);
+              for (const [n, ms] of top) {
+                const when = new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+                // 说明从同名 .md 的第一行取；没有就如实写「没写说明」
+                let note = '没写说明';
+                try {
+                  const md = await readFile(join(dir, `${n.replace(/\.[^.]+$/, '')}.md`), 'utf8');
+                  const first = md.split('\n').find((l) => l.trim());
+                  if (first) note = first.replace(/^#+\s*/, '').trim();
+                } catch {
+                  /* 没有说明文件 */
+                }
+                lines.push(`· ${when}  ${n}  —— ${note}`);
+              }
+            }
+            return { text: lines.join('\n') };
+          } catch (err) {
+            return { text: `（没查成：${err?.message ?? err}）` };
+          }
+        }
 
         // clear = 「我说我好了」。这是 declared_clear，不是 decayed —— 两个计数必须分开，
         // 否则半衰期永远算不对（2026-10-28 定）。它只把「可观测时刻」从 0 变成 1。

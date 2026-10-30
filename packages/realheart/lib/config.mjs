@@ -25,6 +25,8 @@ export const DSH_HOME = process.env.DSH_HOME || join(os.homedir(), '.dsh');
 export const DEFAULTS = {
   enabled: true,
   // 帐本、状态文件所在目录
+  // 她的根：产物（pieces）和人格都在这下面。可以换，但换了等于换一个人住的房子。
+  root: QQROOT,
   stateDir: join(QQROOT, 'work', 'realheart'),
   // 三路事件源
   sessionsRoot: join(DSH_HOME, 'sessions'),
@@ -60,6 +62,7 @@ export const RANGES = {
 
 export const Config = Schema.object({
   enabled: Schema.boolean().default(DEFAULTS.enabled),
+  root: Schema.string().default(DEFAULTS.root),
   stateDir: Schema.string().default(DEFAULTS.stateDir),
   sessionsRoot: Schema.string().default(DEFAULTS.sessionsRoot),
   auditDir: Schema.string().default(DEFAULTS.auditDir),
@@ -168,7 +171,7 @@ export function validateConfig(cfg = {}) {
   }
 
   // ── 四个目录 ──
-  for (const key of ['stateDir', 'sessionsRoot', 'auditDir', 'historyDir', 'personaHome']) checkDir(key, c[key], out);
+  for (const key of ['root', 'stateDir', 'sessionsRoot', 'auditDir', 'historyDir', 'personaHome']) checkDir(key, c[key], out);
 
   // ── profile 名字不许带路径分隔符 ──
   if (typeof c.freeTimeProfile !== 'string' || !c.freeTimeProfile.trim()) {
@@ -209,6 +212,10 @@ export const FIELD_META = [
     why: '关掉之后她看不到自己的心情和没完的事 —— 她还是能记账，但不会再被影响。行为会明显不同。',
   },
   {
+    key: 'root', label: '她的根目录', level: 'danger',
+    range: '绝对路径',
+    why: '产物（pieces/）和人格都在这下面。换了等于给她换一个住处 —— 旧目录里的东西不会跟过来。',
+  },  {
     key: 'stateDir', label: '账本目录', level: 'danger',
     range: '绝对路径',
     why: '改了等于换一份账：旧目录里的心情、待办、改动记录都不会跟过来。改之前先 export。',

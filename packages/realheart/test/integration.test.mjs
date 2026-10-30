@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, chmod, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, chmod, writeFile, readFile } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -192,10 +192,80 @@ test('总开关在的时候，apply 什么都不做（工具不注册、监听�
 });
 
 test('dispose 会挂上（不然热重载会漏监听器）', async () => {
-  const h = await boot();
-  try {
+  const h = await boot();  try {
     assert.ok(h.handlers.some((x) => x.name === 'dispose'));
   } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+// ── P-6 ①②：自己想留就留、自己想查就查 ──
+
+test('自己留一句：下一轮原样回来，不加工（P-6 ①）', async () => {
+  const h = await boot();
+  try {
+    const r1 = await h.tools.get('rh_control').execute({ action: 'keep', text: '这句话我要留着' });
+    assert.match(r1.text, /留着了/);
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const kept = out.sections.find((s) => s.name === 'realheart:kept');
+    assert.ok(kept, '留的那一段没注入');
+    assert.match(kept.text, /【你留下的话】/);
+    assert.match(kept.text, /这句话我要留着/);
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('同一句留两次不重复记', async () => {
+  const h = await boot();
+  try {
+    const ctl = h.tools.get('rh_control');
+    await ctl.execute({ action: 'keep', text: '重复的一句' });
+    const r2 = await ctl.execute({ action: 'keep', text: '重复的一句' });
+    assert.match(r2.text, /已经留着了/);
+    const f = await ctl.execute({ action: 'files' });
+    assert.equal((f.text.match(/重复的一句/g) || []).length, 1);
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('撤掉之后不再回来，而且撤这件事留痕', async () => {
+  const h = await boot();
+  try {
+    const ctl = h.tools.get('rh_control');
+    await ctl.execute({ action: 'keep', text: '待会儿要撤的' });
+    const files = await ctl.execute({ action: 'files' });
+    const id = (files.text.match(/· ([0-9a-f]{8})  待会儿要撤的/) || [])[1];
+    assert.ok(id, 'files 里没给出 id，撤不掉');
+    const un = await ctl.execute({ action: 'unkeep', id });
+    assert.match(un.text, /撤掉了/);
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    assert.equal(out.sections.find((s) => s.name === 'realheart:kept'), undefined);
+    const raw = await readFile(join(h.stateDir, 'kept.jsonl'), 'utf8');
+    assert.match(raw, /"action":"keep"/);
+    assert.match(raw, /"action":"unkeep"/);
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('files 列出产物；没有说明文件就如实写「没写说明」（P-6 ②）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rh-pieces-'));
+  const pieces = join(root, 'work', 'pieces');
+  const h = await boot({ root });
+  try {
+    await mkdir(pieces, { recursive: true });
+    await writeFile(join(pieces, '一张画.png'), 'x');
+    await writeFile(join(pieces, '一篇字.md'), '# 这是说明\n正文');
+    const r = await h.tools.get('rh_control').execute({ action: 'files' });
+    assert.match(r.text, /【产物】/);
+    assert.match(r.text, /一张画\.png.*没写说明/);
+    assert.match(r.text, /一篇字\.md.*这是说明/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
     await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
