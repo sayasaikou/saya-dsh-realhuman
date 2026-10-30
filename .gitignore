@@ -4,3 +4,6 @@ __pycache__/
 config.json
 
 node_modules/
+
+# work/ 是内部工作文档：含她的原话、服务器地址、账本数字 —— 不进公开仓
+work/
