@@ -314,8 +314,22 @@ ls <stateDir>                               # 3. 她的账本还在，位置对
 npx realheart off                                    # 全停：不注入、不记账、四个工具都不注册
 npx realheart on                                     # 恢复
 npx realheart export --out ~/realheart-导出           # 把账本原文导出来
-npx realheart wipe --state-dir <账本目录>             # 删（先打印清单，再要确认）
+npx realheart wipe --state-dir <账本目录> --why "…"   # 删整份账本（先打清单，再要确认）
+npx realheart forget --path <文件或目录> --why "…"    # 删单个产物（留标记）
 ```
+
+**`forget` 是唯一能删单个东西的入口**，边界是硬的：
+
+- 只能删**账本目录**和 `work/pieces` 底下的东西，别的一律拒绝。
+  一个能删任意路径的入口，等于把整台机器交出去。
+- 删之前**必写标记**，标记写在**被删内容之外**（`$DSH_HOME/realheart/forget-log.md`）——
+  写在里面就自相矛盾：删完连「删过什么」都一起没了。
+- 标记记四件：什么时候、删了什么、原来有什么、为什么。没写为什么就留一行「（没写）」，
+  空着比写明更糟 —— 看不出是漏了还是不用写。
+- 非交互环境必须 `--yes`。
+
+**她的四个工具里没有删除动作。** 记账的人不能同时握毁账的权 —— 这不是不信任她，
+是这条机制的全部意义在「账比人可靠」。她想删就提出来，由人动手；她提出这件事本身会留在流水里。
 
 **`off` 就是一个文件**：`$DSH_HOME/realheart/DISABLED`。它在，`apply` 一进门就返回。
 为什么不用「改配置里的 `enabled`」：改配置要么动 profile 的 YAML（热改会整份重挂、

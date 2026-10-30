@@ -257,6 +257,19 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       '每一次都是「少了一段但没挡住说话」。哪个环节：mood / pending-change / pending / all —— 对着那个环节查');
   }
 
+  // ── 11. 删过什么（M1-9）──
+  // 删掉的内容不会回来，但「删过什么」这句话必须还在 —— 它存在被删内容之外。
+  const forgetLog = join(dshHome, 'realheart', 'forget-log.md');
+  if (!existsSync(forgetLog)) {
+    add('ok', '删除记录', '没有删过东西');
+  } else {
+    const text = await readFile(forgetLog, 'utf8');
+    const entries = (text.match(/^## /gm) || []).length;
+    const last = (text.match(/^## (.*)$/m) || [])[1] || '（读不出标题）';
+    add('ok', '删除记录', `删过 ${entries} 次，最后一次：${last}`,
+      `路径 ${forgetLog} —— 这是唯一能证明「删过什么」的东西，别删它`);
+  }
+
   const summary = { ok: 0, warn: 0, fail: 0 };
   for (const it of items) summary[it.level] += 1;
   return { items, summary, stateDir, pagePort };

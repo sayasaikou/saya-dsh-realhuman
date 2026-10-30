@@ -205,6 +205,22 @@ test('总开关开着时第一条就说清「被停用中」（不然后面那�
   }
 });
 
+test('删过东西要说出来（内容没了，这句还得在）', async () => {
+  const h = await makeHome();
+  await writeFile(
+    join(h.home, 'realheart', 'forget-log.md'),
+    '\n## 2026-10-30 22:50 · 删了整份账本\n\n- 为什么：她说不想留着\n',
+  );
+  try {
+    const r = await runDoctor({ dshHome: h.home });
+    const item = pick(r, '删除记录');
+    assert.match(item.detail, /删过 1 次/);
+    assert.match(item.detail, /22:50/);
+  } finally {
+    await rm(h.home, { recursive: true, force: true });
+  }
+});
+
 test('每条不是 ok 的项都得带「怎么修」', async () => {
   const home = await mkdtemp(join(tmpdir(), 'rh-doc-fix-'));
   try {

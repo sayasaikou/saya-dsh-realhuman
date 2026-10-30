@@ -15,12 +15,13 @@
  */
 
 import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
-import { readdir, copyFile, rm, stat } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
+import { readdir, copyFile, rm, stat, readFile } from 'node:fs/promises';
+import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { extractVersion, satisfies } from '../lib/version.mjs';
+import { renderForgetEntry, inventoryOf, appendForget } from '../lib/forget.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(HERE, '..');
@@ -43,13 +44,16 @@ function usage() {
   npx ${PKG} doctor                                        自检：在不在工作 / 哪坏了 / 怎么修
   npx ${PKG} off | on                                      总开关（停 / 恢复，都要重启才生效）
   npx ${PKG} export [--state-dir <目录>] [--out <目录>]      把账本原文导出来
-  npx ${PKG} wipe   --state-dir <目录> [--yes]              删掉账本（要先给目录，再确认）
+  npx ${PKG} wipe   --state-dir <目录> [--yes] [--why "…"]   删整份账本（要先给目录，再确认）
+  npx ${PKG} forget --path <文件或目录> --why "…" [--yes]    删单个产物（留标记）
 
 选项：
   --profile    装到哪个 profile。省掉就用当前目录（当前目录得正好是 profile）
   --dry-run    只说要做什么，不动手
   --state-dir  账本目录。不给就试着从运行时 config.json 读；读不到时**不猜**，直接让你给
   --out        导出的目标目录
+  --path       要删的东西（只能是账本目录或 work/pieces 底下的）
+  --why        为什么删。会写进 forget-log.md —— 不写就留「（没写）」，但那是个洞
   --yes        非交互环境里表示「确实要删/要做」
 
 几个规矩：
@@ -231,6 +235,16 @@ async function resolveStateDir(opts) {
   }
 }
 
+/** 她那台机器上的根（pieces 在它下面）。同样只认运行时 config.json。 */
+async function resolveRoot() {
+  const cfgPath = join(DSH_HOME, 'realheart', 'runtime', 'config.json');
+  if (!existsSync(cfgPath)) return '';
+  try {
+    return JSON.parse(await readFile(cfgPath, 'utf8')).root || '';
+  } catch {
+    return '';
+  }
+}
 const DATA_RE = /\.(jsonl|md|log|txt)$/;
 
 // ── 数据主权（P-3）──
@@ -277,12 +291,76 @@ async function wipe(opts) {
     if (process.stdin.isTTY) fail('没确认，什么都没删。加 --yes 表示你确实要删');
     fail('非交互环境，要真删必须加 --yes。什么都没删');
   }
+  // 先留标记，再删。顺序反了就自相矛盾 —— 标记写在被删的东西里，删完一起没了。
+  const entry = renderForgetEntry({
+    at: new Date().toISOString().slice(0, 16).replace('T', ' '),
+    scope: '整份账本',
+    target: stateDir,
+    inventory: await inventoryOf(stateDir),
+    why: opts.why,
+    by: `命令行 realheart wipe（${os.hostname()}）`,
+  });
+  const logPath = await appendForget(DSH_HOME, entry);
+  say(`标记写在 ${logPath}（在被删的东西之外）`);
   await rm(stateDir, { recursive: true, force: true });
   say(`已删：${stateDir}`);
 }
 
+/**
+ * 删单个产物 / 单个文件 —— 这就是 M1-9 定案里「人是唯一能删的那一方」的入口。
+ *
+ * 两条硬边界：
+ *   ① 只允许删账本目录和 `work/pieces` 底下的东西，别的一律拒绝；
+ *   ② 删之前必须写下标记（写在被删内容之外），写不上就不删。
+ *
+ * 她的四个工具里**没有**删除动作 —— 记账的人不能同时握毁账的权。
+ */
+async function forget(opts) {
+  if (!opts.path) {
+    fail('要删什么？用 --path <文件或目录> 指出来，再加 --why "为什么"');
+  }
+  const stateDir = await resolveStateDir(opts);
+  const root = await resolveRoot();
+  const allowed = [stateDir, root ? join(root, 'work', 'pieces') : ''].filter(Boolean);
+  if (!allowed.length) {
+    fail('既不知道账本目录也不知道 pieces 在哪 —— 明说 --state-dir，别让它猜');
+  }
+  const target = resolve(opts.path);
+  const inside = allowed.some((dir) => {
+    const rel = relative(resolve(dir), target);
+    return rel && !rel.startsWith('..') && !isAbsolute(rel);
+  });
+  if (!inside) {
+    fail(`拒绝：${target} 不在允许删除的范围内。\n只允许删：${allowed.join('\n        ')}\n（这条边界是硬的 —— 一个能删任意路径的入口，等于把整台机器交出去）`);
+  }
+  if (!existsSync(target)) {
+    say(`不存在：${target}，没什么可删`);
+    return;
+  }
+  const inv = await inventoryOf(target);
+  say(`将要删除：${target}`);
+  say(`内容：${inv}`);
+  say('删了就真没了。这不是缓存。');
+  if (!opts.yes) {
+    if (process.stdin.isTTY) fail('没确认，什么都没删。加 --yes 表示你确实要删');
+    fail('非交互环境，要真删必须加 --yes。什么都没删');
+  }
+  const entry = renderForgetEntry({
+    at: new Date().toISOString().slice(0, 16).replace('T', ' '),
+    scope: '',
+    target,
+    inventory: inv,
+    why: opts.why,
+    by: `命令行 realheart forget（${os.hostname()}）`,
+  });
+  const logPath = await appendForget(DSH_HOME, entry);
+  say(`标记写在 ${logPath}（在被删的东西之外）`);
+  await rm(target, { recursive: true, force: true });
+  say(`已删：${target}`);
+}
+
 const argv = process.argv.slice(2);
-const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false };
+const opts = { profile: '', dryRun: false, stateDir: '', out: '', yes: false, path: '', why: '' };
 const rest = [];
 for (let i = 0; i < argv.length; i += 1) {
   const a = argv[i];
@@ -291,10 +369,14 @@ for (let i = 0; i < argv.length; i += 1) {
   else if (a === '--profile') opts.profile = argv[++i] ?? '';
   else if (a === '--state-dir') opts.stateDir = argv[++i] ?? '';
   else if (a === '--out') opts.out = argv[++i] ?? '';
+  else if (a === '--path') opts.path = argv[++i] ?? '';
+  else if (a === '--why') opts.why = argv[++i] ?? '';
   else if (a === '-h' || a === '--help') { usage(); process.exit(0); }
   else if (a.startsWith('--profile=')) opts.profile = a.slice('--profile='.length);
   else if (a.startsWith('--state-dir=')) opts.stateDir = a.slice('--state-dir='.length);
   else if (a.startsWith('--out=')) opts.out = a.slice('--out='.length);
+  else if (a.startsWith('--path=')) opts.path = a.slice('--path='.length);
+  else if (a.startsWith('--why=')) opts.why = a.slice('--why='.length);
   else rest.push(a);
 }
 
@@ -305,6 +387,7 @@ else if (cmd === 'off') switchOff();
 else if (cmd === 'on') switchOn();
 else if (cmd === 'export') await exportData(opts);
 else if (cmd === 'wipe') await wipe(opts);
+else if (cmd === 'forget') await forget(opts);
 else if (cmd === 'help') usage();
 else {
   console.error(`[realheart] 不认识这个子命令：${cmd}`);
