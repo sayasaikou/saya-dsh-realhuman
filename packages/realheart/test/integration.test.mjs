@@ -12,11 +12,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, chmod, writeFile } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // DSH_HOME 必须在 import 之前设好 —— config.mjs 是模块加载时求值的
 const HOME = await mkdtemp(join(tmpdir(), 'rh-int-'));
+process.on('exit', () => { try { rmSync(HOME, { recursive: true, force: true }); } catch { /* 清不掉就算了 */ } });
 process.env.DSH_HOME = HOME;
 
 const { apply } = await import('../index.mjs');
@@ -43,7 +45,13 @@ function makeCtx() {
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 
 async function boot(over = {}) {
-  const stateDir = over.stateDir ?? join(await mkdtemp(join(tmpdir(), 'rh-int-state-')), 'state');
+  // 记下 mkdtemp 建的父目录：清理时删它，不然每跑一次就留一个空目录在 TEMP 里
+  let root = null;
+  let stateDir = over.stateDir;
+  if (!stateDir) {
+    root = await mkdtemp(join(tmpdir(), 'rh-int-state-'));
+    stateDir = join(root, 'state');
+  }
   const h = makeCtx();
   apply(h.ctx, {
     stateDir,
@@ -53,7 +61,7 @@ async function boot(over = {}) {
     ...over,
   });
   await settle();
-  return { ...h, stateDir };
+  return { ...h, stateDir, root };
 }
 
 test('观测页起不来时，四个工具照样注册上', async () => {
@@ -63,7 +71,7 @@ test('观测页起不来时，四个工具照样注册上', async () => {
       assert.ok(h.tools.has(name), `${name} 没注册 —— 观测页坏了不该拖累工具面`);
     }
   } finally {
-    await rm(h.stateDir, { recursive: true, force: true });
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
 
@@ -74,7 +82,7 @@ test('注入为 global —— 少了这个选项就是「注册了、没报错�
     assert.ok(inj, '注入 handler 没挂');
     assert.equal(inj.opts?.global, true);
   } finally {
-    await rm(h.stateDir, { recursive: true, force: true });
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
 
@@ -108,7 +116,7 @@ test('没有心情账本时注入也不炸（空账本是正常状态，不是�
     assert.equal(out.marker, 1);
     assert.ok(out.sections.some((s) => s.name === 'base'));
   } finally {
-    await rm(h.stateDir, { recursive: true, force: true });
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
 
@@ -134,7 +142,7 @@ test('同一份 assembly 只注入一次（重试 / 多 agent 不会把心情塞
     assert.ok(first.sections.length > 0, '第一次该注入');
     assert.equal(second.sections.length, 0, '同一份 assembly 第二次不该再注入');
   } finally {
-    await rm(h.stateDir, { recursive: true, force: true });
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
 
@@ -164,7 +172,7 @@ test('被人改写的心情，注入里必须写明「不是你自己的」（P-
     // 还得给她一条出路：可以不认
     assert.match(mood.text, /rh_control|rh_mood/);
   } finally {
-    await rm(h.stateDir, { recursive: true, force: true });
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
 
@@ -188,6 +196,6 @@ test('dispose 会挂上（不然热重载会漏监听器）', async () => {
   try {
     assert.ok(h.handlers.some((x) => x.name === 'dispose'));
   } finally {
-    await rm(h.stateDir, { recursive: true, force: true });
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
