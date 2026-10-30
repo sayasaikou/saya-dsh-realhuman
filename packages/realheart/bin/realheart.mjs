@@ -14,11 +14,12 @@
  *   - 加 bundles / 备份：调 setup.mjs（唯一知道包名和格式的地方）
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
+import { extractVersion, satisfies } from '../lib/version.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(HERE, '..');
@@ -71,13 +72,43 @@ function resolveProfile(arg) {
   return join(DSH_HOME, 'profiles', arg);
 }
 
-function hasDsh() {
+function dshVersion() {
   // Windows 下 dsh 是 .cmd，只能经 shell 起；经 shell 时别同时传 args 数组
   // （Node 会警告「args 未转义」—— 那个警告是对的，不该当噪声压掉，该改成不带 args）。
   const r = process.platform === 'win32'
-    ? spawnSync('dsh --version', { stdio: 'ignore', shell: true })
-    : spawnSync('dsh', ['--version'], { stdio: 'ignore' });
-  return !r.error && r.status === 0;
+    ? spawnSync('dsh --version', { encoding: 'utf8', shell: true })
+    : spawnSync('dsh', ['--version'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return '';
+  return extractVersion(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+}
+
+/**
+ * engines 校验。
+ *
+ * 写在 package.json 里的 `engines.dsh` 只是个声明 —— 装的时候没人看它。
+ * 宿主版本低于要求的表现是**加载失败或者行为不对**，而且报错看不懂。
+ * 所以这里主动问一次宿主版本，对不上就说清楚。
+ *
+ * ⚠️ **不拦**：拿不到版本（没有 dsh 命令 / 输出格式变了）时只说一句「没法确认」。
+ * 拦下来就是把「我不知道」变成「你不许装」，那是两件事。
+ */
+function checkEngines() {
+  const want = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8'))?.engines?.dsh;
+  if (!want) return;
+  const got = dshVersion();
+  if (!got) {
+    say(`宿主版本没法确认（没拿到 dsh --version 的输出）。这个包要求 dsh ${want}，自己核一下。`);
+    return;
+  }
+  const ok = satisfies(got, want);
+  if (ok === false) {
+    say(`⚠ 宿主是 dsh ${got}，这个包要求 ${want} —— 版本低了。`);
+    say('  装上可能加载失败，或者行为不对。先升 dsh 再装，或者装完不行就回滚。');
+  } else if (ok === true) {
+    say(`宿主 dsh ${got}，满足要求 ${want}`);
+  } else {
+    say(`宿主 dsh ${got}，要求 ${want} 这种写法我认不出来，自己核一下。`);
+  }
 }
 
 function install(opts) {
@@ -92,6 +123,7 @@ function install(opts) {
     fail(`profile 目录名里有不安全的字符，不敢拼进命令行：${profileName}\n（名字里带空格/引号/符号的，请把 dsh plugin add 手动跑一次，再用 --profile 跑这个脚本）`);
   }
   say(`profile：${profileDir}`);
+  if (!opts.dryRun) checkEngines();
 
   // ① 包本身。已经装过就跳过 —— 这一步重复跑的代价是几十秒的 pnpm 解析，不是错误。
   const installed = existsSync(join(profileDir, 'node_modules', PKG, 'package.json'));
@@ -100,7 +132,7 @@ function install(opts) {
   } else if (opts.dryRun) {
     say(`[dry-run] dsh plugin --profile ${profileName} add ${PKG}`);
   } else {
-    if (!hasDsh()) {
+    if (!dshVersion()) {
       // 没有 dsh CLI 不等于装不了 —— 但那两条替代路径得说清楚，不然人卡在这儿。
       fail(`这台机器上没有 dsh 命令，装不了包。
 两条替代路径（README「云端部署」有前因后果）：

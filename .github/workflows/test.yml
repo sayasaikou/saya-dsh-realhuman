@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    # ⚠️ 这里跑不全，原因写在下面那步的注释里。跑不全也要跑 ——
+    #    纯函数那几份（流水回放 / 口令打码 / 版本比较）是最容易在改动里被悄悄弄坏的部分。
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # config / doctor / integration 三份测试要 import @deepseek-ai/schemastery，
+      # 那是 dsh 生态里的包，**不在公网 npm 上**（它是宿主 side 的 peerDependency）。
+      # CI 里取不到，所以不跑那三份。它们要在装了 dsh 的机器上跑：node --test
+      - name: 纯函数单测（不依赖 dsh 生态包）
+        run: node --test test/pending.test.mjs test/secrets.test.mjs test/version.test.mjs
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 包清单是最容易出错又最晚发现的东西：装完之后才发现少了 lib/，或者多了 60 KB 缓存。
+      # 这条判据来自实测 —— 跑过一次 Python 编译检查，__pycache__ 就混进了包里。
+      - name: 包清单不许有缓存 / 单测 / 开发脚本
+        working-directory: packages/realheart
+        run: |
+          set -e
+          npm pack --dry-run 2>&1 | tee /tmp/pack.txt
+          if grep -q '__pycache__' /tmp/pack.txt; then
+            echo "::error::包里混进了 __pycache__（跑过 python 编译检查就会冒出来）"
+            exit 1
+          fi
+          if grep -qE 'test/|check-package|check-no-python' /tmp/pack.txt; then
+            echo "::error::包里混进了单测或开发脚本"
+            exit 1
+          fi
+          for f in index.mjs lib/pending.mjs lib/config.mjs lib/doctor.mjs lib/secrets.mjs \
+                   bin/realheart.mjs scripts/uninstall.sh runtime/rh-status.py CHANGELOG.md; do
+            grep -q "$f" /tmp/pack.txt || { echo "::error::包里少了 $f"; exit 1; }
+          done
+          echo "清单没问题"

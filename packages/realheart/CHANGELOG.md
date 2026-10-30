@@ -50,6 +50,18 @@
 - `setup.mjs --remove`：摘 `bundles` 的正式入口。幂等，摘不到不报错。
 - `setup.mjs` 加 `--dry-run`。
 
+### engines 装时校验 + CI
+
+- 新增 `lib/version.mjs`（`compareVersions` / `extractVersion` / `satisfies`，只为 engines 服务，不引依赖）。
+- `install` 时问一次宿主版本，跟 `engines.dsh` 比：低了就明说「装上可能加载失败」。
+  **拿不到版本只说「没法确认」，不拦** —— 把「我不知道」变成「你不许装」是两件事。
+- 新增 `.github/workflows/test.yml`，两个 job：
+  - `unit`：纯函数三份测试（流水回放 / 口令打码 / 版本比较），矩阵 ubuntu × windows × node 20/22。
+  - `pack`：包清单不许有 `__pycache__` / 单测 / 开发脚本，且必须包含九样关键文件。
+- ⚠️ **CI 跑不全，原因写在 yaml 里**：`config` / `doctor` / `integration` 三份测试要
+  `@deepseek-ai/schemastery`，那是宿主侧 peerDependency、不在公网 npm，CI 里取不到。
+  完整测试得在装了 dsh 的机器上跑 `node --test`。
+
 ### 口令不再进日志（原来是进的）
 
 - **观测页地址带着口令进过日志**。日志会被贴进 issue、聊天、截图 —— 这等于把口令一起贴出去。
