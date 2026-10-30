@@ -565,6 +565,37 @@ export function apply(ctx, config = {}) {
           await noteInjectProblem('kept', err);
         }
         if (!parts.length) return assembled;
+        // ── 预算（M1-6）──
+        // 不做这个的话，她留的话越攒越多、待办越来越长，每轮都在为它们付钱，
+        // 而且是不知不觉的。超了就按优先级从低到高裁，**裁掉的要留痕** —— 少一段不能是静默的。
+        // 优先级：心情（她此刻的样子）> 她留的话（她自己挑的）> 没完的事 > 待改。
+        const PRIORITY = {
+          'realheart:mood': 100,
+          'realheart:kept': 80,
+          'realheart:pending': 60,
+          'realheart:pending-change': 40,
+        };
+        const budget = Number(cfg.injectBudgetChars) > 0 ? Number(cfg.injectBudgetChars) : 0;
+        let total = parts.reduce((n, p) => n + p.text.length, 0);
+        const dropped = [];
+        if (budget && total > budget) {
+          // 从优先级最低的开始丢；同一优先级里后加的（order 大的）先丢
+          const order = [...parts].sort((a, b) => {
+            const pa = PRIORITY[a.name] ?? 50;
+            const pb = PRIORITY[b.name] ?? 50;
+            return pa === pb ? b.order - a.order : pa - pb;
+          });
+          for (const p of order) {
+            if (total <= budget) break;
+            parts.splice(parts.indexOf(p), 1);
+            total -= p.text.length;
+            dropped.push(p.name.replace('realheart:', ''));
+          }
+        }
+        // 顺序要紧：**先留痕，再看还剩不剩**。
+        // 反过来写的话，「全裁光」那一轮就是静默的 —— 而那恰恰是最该被看见的一轮。
+        if (dropped.length) await noteInjectProblem('budget', `超出 ${budget} 字，裁掉了 ${dropped.join(' / ')}`);
+        if (!parts.length) return assembled;
         const sections = Array.isArray(assembled?.sections) ? assembled.sections : [];
         const payload = parts.map((x) => `--- ${x.name} ---\n${x.text}`).join('\n\n');
         // 把她这一轮看到的原文落一份 —— debug 页和“她自己查”都靠它。

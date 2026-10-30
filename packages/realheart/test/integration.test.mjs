@@ -269,3 +269,56 @@ test('files 列出产物；没有说明文件就如实写「没写说明」（P-
     await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
+// ── M1-6：注入预算 ──
+
+test('超出预算时从低优先级开始裁，心情永不裁（M1-6）', async () => {
+  const h = await boot({ injectBudgetChars: 260 });
+  try {
+    // 塞一条心情 + 一堆她留的话
+    await writeFile(
+      join(h.stateDir, 'mood.jsonl'),
+      `${JSON.stringify({ at: new Date().toISOString(), feeling: '还行', level: 5, why_ref: '', why_kind: 'ref', decay: null })}\n`,
+    );
+    const ctl = h.tools.get('rh_control');
+    for (const n of ['第一句很长的留言内容', '第二句很长的留言内容', '第三句很长的留言内容']) {
+      await ctl.execute({ action: 'keep', text: `${n}${'补'.repeat(30)}` });
+    }
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const names = out.sections.map((s) => s.name);
+    assert.ok(names.includes('realheart:mood'), '心情段被裁了 —— 它不该被裁');
+    const total = out.sections.reduce((n, s) => n + s.text.length, 0);
+    assert.ok(total <= 260 + 120, `总字数 ${total} 还是超预算（允许一点冗余，因为裁完不再回填）`);
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('裁掉了要留痕（少一段不能是静默的）', async () => {
+  const h = await boot({ injectBudgetChars: 200 });
+  try {
+    const ctl = h.tools.get('rh_control');
+    for (let i = 0; i < 6; i += 1) {
+      await ctl.execute({ action: 'keep', text: `第${i}句${'长'.repeat(40)}` });
+    }
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    const probs = await readFile(join(h.stateDir, 'inject-problems.log'), 'utf8');
+    assert.match(probs, /budget/);
+    assert.match(probs, /裁掉了/);
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('预算够的时候一段都不裁', async () => {
+  const h = await boot({ injectBudgetChars: 5000 });
+  try {
+    await h.tools.get('rh_control').execute({ action: 'keep', text: '短的一句' });
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    assert.ok(out.sections.some((s) => s.name === 'realheart:kept'));
+  } finally {
+    await rm(h.root ?? h.stateDir, { recursive: true, force: true });
+  }
+});

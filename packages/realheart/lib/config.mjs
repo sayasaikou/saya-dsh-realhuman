@@ -36,6 +36,8 @@ export const DEFAULTS = {
   indexTtlMs: 3600000,
   // 每轮开口前把当前心情注入提示词
   injectMood: true,
+  // 注入的总字数上限。超了就从优先级低的那段开始裁，裁掉的会留痕（M1-6）。
+  injectBudgetChars: 1200,
   // 观测页：默认只在 127.0.0.1 上开，手机想看自己去反代或改 pageBind
   servePage: true,
   pagePort: 8098,
@@ -69,6 +71,7 @@ export const Config = Schema.object({
   historyDir: Schema.string().default(DEFAULTS.historyDir),
   indexTtlMs: Schema.number().min(RANGES.indexTtlMs.min).max(RANGES.indexTtlMs.max).default(DEFAULTS.indexTtlMs),
   injectMood: Schema.boolean().default(DEFAULTS.injectMood),
+  injectBudgetChars: Schema.number().min(200).max(20000).default(DEFAULTS.injectBudgetChars),
   servePage: Schema.boolean().default(DEFAULTS.servePage),
   pagePort: Schema.number().min(RANGES.pagePort.min).max(RANGES.pagePort.max).default(DEFAULTS.pagePort),
   pageBind: Schema.string().default(DEFAULTS.pageBind),
@@ -215,6 +218,10 @@ export const FIELD_META = [
     key: 'root', label: '她的根目录', level: 'danger',
     range: '绝对路径',
     why: '产物（pieces/）和人格都在这下面。换了等于给她换一个住处 —— 旧目录里的东西不会跟过来。',
+  },  {
+    key: 'injectBudgetChars', label: '注入字数上限', level: 'caution',
+    range: '200–20000（默认 1200）',
+    why: '每轮塞进提示词的总字数。超了从优先级低的那段开始裁：待改 → 没完的事 → 她留的话；心情永不裁。裁掉会记一条。调大是花钱买完整，调小是省钱买残缺。',
   },  {
     key: 'stateDir', label: '账本目录', level: 'danger',
     range: '绝对路径',
