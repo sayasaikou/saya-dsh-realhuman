@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, chmod, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,6 +107,32 @@ test('没有心情账本时注入也不炸（空账本是正常状态，不是�
     // 原样保留：别人挂进去的段一个都不许丢
     assert.equal(out.marker, 1);
     assert.ok(out.sections.some((s) => s.name === 'base'));
+  } finally {
+    await rm(h.stateDir, { recursive: true, force: true });
+  }
+});
+
+test('同一份 assembly 只注入一次（重试 / 多 agent 不会把心情塞成复读）', async () => {
+  const h = await boot();
+  try {
+    // 造一条没完的事，这样注入里一定有东西，才看得出「注了几次」
+    const ev = {
+      fp: 'abc12345',
+      text: '一条测试',
+      action: 'add',
+      at: new Date().toISOString(),
+      session: 's1',
+      round: 1,
+    };
+    await writeFile(join(h.stateDir, 'pending.jsonl'), `${JSON.stringify(ev)}\n`);
+
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const assembly = { sections: [] };
+    const first = await inj.fn(assembly, {}, async () => ({ sections: [] }));
+    const second = await inj.fn(assembly, {}, async () => ({ sections: [] }));
+
+    assert.ok(first.sections.length > 0, '第一次该注入');
+    assert.equal(second.sections.length, 0, '同一份 assembly 第二次不该再注入');
   } finally {
     await rm(h.stateDir, { recursive: true, force: true });
   }

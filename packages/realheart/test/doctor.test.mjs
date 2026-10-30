@@ -163,6 +163,33 @@ test('日志干净时说干净（不留言又不报错，两样都不行）', as
   }
 });
 
+test('注入少过段 → warn，并指出是哪个环节（不许静默少一路）', async () => {
+  const h = await makeHome();
+  await writeFile(
+    join(h.state, 'inject-problems.log'),
+    '2026-10-30T12:00:00.000Z\tpending\t读不到账本\n2026-10-30T12:05:00.000Z\tall\t炸了\n',
+  );
+  try {
+    const r = await runDoctor({ dshHome: h.home });
+    const item = pick(r, '注入失败记录');
+    assert.equal(item.level, 'warn');
+    assert.match(item.detail, /2 次/);
+    assert.match(item.detail, /all/);
+  } finally {
+    await rm(h.home, { recursive: true, force: true });
+  }
+});
+
+test('注入从没少过段就说 ok（不留言又不报错，两样都不行）', async () => {
+  const h = await makeHome();
+  try {
+    const r = await runDoctor({ dshHome: h.home });
+    assert.equal(pick(r, '注入失败记录').level, 'ok');
+  } finally {
+    await rm(h.home, { recursive: true, force: true });
+  }
+});
+
 test('每条不是 ok 的项都得带「怎么修」', async () => {
   const home = await mkdtemp(join(tmpdir(), 'rh-doc-fix-'));
   try {

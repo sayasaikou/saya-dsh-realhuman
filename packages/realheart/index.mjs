@@ -435,11 +435,36 @@ export function apply(ctx, config = {}) {
     return lines.join('\n');
   }
 
+  /**
+   * 注入少了哪一段 —— 留一份盘给 doctor 查（M1-11）。
+   *
+   * 为什么不能只打日志：她那台机器的日志在 journald 里，得有人想翻才翻得到；
+   * 而「注入少了一段」的表现只是她说话的样子不一样了 —— 没人会因为这个去翻日志。
+   * 落一份文件，doctor 一眼就能看见。
+   */
+  async function noteInjectProblem(which, err) {
+    const line = `${new Date().toISOString()}\t${which}\t${err?.message ?? err}\n`;
+    try {
+      await appendFile(join(cfg.stateDir, 'inject-problems.log'), line, 'utf8');
+    } catch {
+      /* 连这个都写不了，说明账本目录本身坏了 —— doctor 的「账本目录」那项会报 */
+    }
+  }
+
   if (cfg.injectMood !== false) {
     // ⚠️ { global: true } 不是可选的：system-prompt/assemble 按作用域触发，
     //    不带这个选项就收不到事件 —— 表现是“注册了、没报错、永远不生效”。
-    ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    // ── 同轮去重（M1-7）──
+    // 一次说话的过程里 assemble 可能被调多次（重试、多 agent、多 provider 各跑一遍）。
+    // 不去重的后果不是多花钱，是**同一条心情被塞好几份**，越重试越像复读。
+    // 用对象标识认「同一份装配」：同一个 assembly 对象只注入一次。
+    const assembledSeen = new WeakSet();
+    ctx.on('system-prompt/assemble', async (assembly, _context, next) => {
       const assembled = await next();
+      if (assembly && typeof assembly === 'object') {
+        if (assembledSeen.has(assembly)) return assembled;
+        assembledSeen.add(assembly);
+      }
       try {
         const parts = [];
         const mood = await moodSectionText();
@@ -450,8 +475,10 @@ export function apply(ctx, config = {}) {
           const pev = await readPendingEvents();
           const ptext = pendingSummary(pendingReplay(pev), pev);
           if (ptext) parts.push({ name: 'realheart:pending', order: 902, text: ptext });
-        } catch {
-          /* 没完的事这一段注入失败，就少一段；不挡这一轮说话 */
+        } catch (err) {
+          // 没完的事这一段注入失败，就少一段；不挡这一轮说话 ——
+          // 但**不能没有痕迹**（M1-11）：少一路还让人以为它在工作，是最坏的坏法
+          await noteInjectProblem('pending', err);
         }
         if (!parts.length) return assembled;
         const sections = Array.isArray(assembled?.sections) ? assembled.sections : [];
@@ -465,8 +492,10 @@ export function apply(ctx, config = {}) {
         }
         return { ...assembled, sections: [...sections, ...parts] };
       } catch (err) {
-        // 注入出错必须放行 —— 宁可这一轮没心情，也不能让她说不出话
+        // 注入出错必须放行 —— 宁可这一轮没心情，也不能让她说不出话。
+        // 但放行不等于装作没发生（M1-11）：日志一行 + 落一份盘，doctor 会去查那份盘。
         log(`心情/待改注入失败（放行）：${err?.message ?? err}`, 'error');
+        await noteInjectProblem('all', err);
         return assembled;
       }
     }, { global: true });

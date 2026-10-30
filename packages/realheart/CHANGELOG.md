@@ -50,6 +50,16 @@
 - `setup.mjs --remove`：摘 `bundles` 的正式入口。幂等，摘不到不报错。
 - `setup.mjs` 加 `--dry-run`。
 
+### 注入：去重 + 失败留痕（M1 里两条能立刻做的）
+
+- **同轮去重**：一次说话的过程里 `system-prompt/assemble` 可能被调多次（重试、多 agent）。
+  现在用 WeakSet 认「同一份装配」，同一个对象只注入一次。
+  不去重的后果不是多花钱，是**同一条心情被塞好几份，越重试越像复读**。
+- **注入失败留痕**：原来是「少一段 + 日志一行」。日志在她那台机器的 journald 里，得有人想起来翻；
+  而「注入少一段」的表现只是她说话的样子变了，没人会因为这个去翻日志。
+  现在多落一份 `stateDir/inject-problems.log`（带环节名：mood / pending-change / pending / all），
+  `doctor` 多一项「注入失败记录」。**放行不等于装作没发生。**
+
 ### engines 装时校验 + CI
 
 - 新增 `lib/version.mjs`（`compareVersions` / `extractVersion` / `satisfies`，只为 engines 服务，不引依赖）。

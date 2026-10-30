@@ -237,6 +237,18 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       fresh ? (hasPending ? '' : '注入里没有待办那一段：injectMood 关了？还是被预算裁掉了？') : '一天内没有注入过 —— 没人在说话，或者注入那一路坏了');
   }
 
+  // ── 10. 注入有没有少过段（M1-11：不许静默少一路）──
+  const probPath = join(stateDir, 'inject-problems.log');
+  if (!existsSync(probPath)) {
+    add('ok', '注入失败记录', '没有少过段');
+  } else {
+    const rows = (await readFile(probPath, 'utf8')).split('\n').filter((x) => x.trim());
+    const last = rows[rows.length - 1] ?? '';
+    const lastTime = last.split('\t')[0] ?? '';
+    add('warn', '注入失败记录', `${rows.length} 次少段，最后一次 ${lastTime}（环节：${last.split('\t')[1] ?? '?'}）`,
+      '每一次都是「少了一段但没挡住说话」。哪个环节：mood / pending-change / pending / all —— 对着那个环节查');
+  }
+
   const summary = { ok: 0, warn: 0, fail: 0 };
   for (const it of items) summary[it.level] += 1;
   return { items, summary, stateDir, pagePort };
