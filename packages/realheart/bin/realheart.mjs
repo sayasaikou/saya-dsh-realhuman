@@ -178,6 +178,32 @@ function install(opts) {
   const r2 = spawnSync(process.execPath, args, { stdio: 'inherit' });
   if (r2.status !== 0) fail('往 bundles 里写失败 —— 上面有原因。这一步没做成，装了也没有任何行为变化。');
 
+  // ②.5 依赖自检（2026-10-31 真机验出来的）
+  //   realheart 把 @deepseek-ai/schemastery 写在 peerDependencies，pnpm 不装 peer ——
+  //   干净 profile 里只装它一个，一执行就 Cannot find package。
+  //   qqbot 那台没暴露，是因为它的 profile 里本来就有整套 dsh 包，顺带带进来了。
+  //   所以装完自检一次：缺就补；补不上就明说要多敲哪句，别让人对着一句报错猜。
+  const PEER = '@deepseek-ai/schemastery';
+  const peerResolves = () => spawnSync(
+    process.execPath,
+    ['-e', `try{require.resolve("${PEER}");process.exit(0)}catch(e){process.exit(42)}`],
+    { cwd: profileDir, stdio: 'ignore' },
+  ).status === 0;
+  if (peerResolves()) {
+    say(`依赖 ${PEER} 能解析，不用补`);
+  } else if (opts.dryRun) {
+    say(`[dry-run] 缺 ${PEER}，正式跑会自动补装`);
+  } else {
+    say(`缺 ${PEER}（它写在 peerDependencies，pnpm 不装 peer）—— 自动补装`);
+    const r3 = process.platform === 'win32'
+      ? spawnSync(`dsh plugin --profile ${profileName} add ${PEER}`, { cwd: profileDir, stdio: 'inherit', shell: true })
+      : spawnSync('dsh', ['plugin', '--profile', profileName, 'add', PEER], { cwd: profileDir, stdio: 'inherit' });
+    if (r3.status === 0 && peerResolves()) {
+      say(`补上了：${PEER}`);
+    } else {
+      fail(`装完还是解析不到 ${PEER}。手动补一句：` + String.fromCharCode(10) + `dsh plugin --profile ${profileName} add ${PEER}`);
+    }
+  }
   if (opts.dryRun) {
     say('[dry-run] 到此为止，什么都没改。');
     return;
