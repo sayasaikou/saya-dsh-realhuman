@@ -1196,6 +1196,39 @@ export function apply(ctx, config = {}) {
   }
 
   (async () => {
+    // ── 后台作业控制器：兜底挂一个（2026-10-31）──
+    // 实测：这台云的 global 层 controllers 是空的，而每轮 bash 都在喊
+    // 「no job controller serves this agent」。本机 desktop 同样版本能正常跑
+    // run_in_background ⇒ 不是 dsh 的毛病，是这台组合里没人往 global 层挂。
+    // dsh-jobs-local 的 servesOwner 第一句就是「global 层有 controller ⇒ 所有 agent 都能用」，
+    // 所以从 app 作用域挂一个，就把所有 agent 都盖住了。
+    // 只挂不移：预设里那份 tool-jobs 不动，它会报一次撞名（老的、无害）。
+    (() => {
+      try {
+        const jobs = ctx.get('jobs');
+        if (!jobs) {
+          log('jobs 诊断：ctx.get("jobs") 拿不到服务');
+          return;
+        }
+        const controllers = jobs?.layers?.global?.controllers;
+        const before = typeof controllers?.isEmpty === 'function' ? controllers.isEmpty() : 'n/a';
+        if (before === true && typeof jobs.attachController === 'function') {
+          jobs.attachController('realheart-fallback');
+          const after = typeof controllers?.isEmpty === 'function' ? controllers.isEmpty() : 'n/a';
+          log(`jobs：global 层原本没控制器，已补挂一个（空=${before} → ${after}）`);
+        } else if (before === false) {
+          log('jobs：global 层已经有控制器，不重复挂');
+        } else {
+          // 读不到那个结构 = 兜底失效。**这一支必须报 error**：
+          // 写成「不需要兜底」的话，dsh 哪天改了结构，看到的就是一行安安静静的常态，
+          // 而 warn 会悄悄回来 —— 那正是我们刚从四个小时前挖出来的那种“静默失效”。
+          log('jobs：读不到 layers.global.controllers 这个结构，没补挂 —— 后台作业的 warn 要是回来了，先查这里', 'error');
+        }
+      } catch (err) {
+        log(`jobs 兜底失败：${err?.message ?? err}`, 'error');
+      }
+    })();
+
     try {
       await mkdir(cfg.stateDir, { recursive: true });
     } catch (err) {

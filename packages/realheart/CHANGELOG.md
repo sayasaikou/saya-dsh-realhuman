@@ -5,6 +5,32 @@
 
 ---
 
+## 0.2.3（2026-10-31）
+
+### 后台作业：从 app 层补挂一个 controller（兜底）
+
+云上四十几小时里，每发一条 bash 就打一条：
+`background jobs unavailable: no job controller serves this agent`。
+
+实测判据：
+
+- 在 `realheart` 的 apply 里读 `jobs.layers.global.controllers.isEmpty()` → **true**（global 层一个控制器都没有）
+- 同版本的本机 desktop，`run_in_background` 正常返回 jobId ⇒ **不是 dsh 的毛病**，是这台组合里没人往 global 层挂
+- `dsh-jobs-local.servesOwner()` 第一句：global 层有 controller ⇒ 所有 agent 都能用
+
+所以：启动时若 global 层空，就从 app 作用域 `attachController('realheart-fallback')`。
+
+- **只在空的时候才挂**（`before === true` 才动手）。哪天 dsh 自己挂好了，这一行自动不干。
+- **读不到 `layers.global.controllers` 这个结构时打 error**，不是静默跳过 ——
+  “看着像不需要兜底”是这套东西最坏的坏法。
+- 预设里那份 `tool-jobs` 一个字没动（它会报一次撞名，老的、无害）。
+
+实测验收（云端）：warn 最后一条 10:27:29 → 10:28:31 补挂 → 之后 0 条；
+`run_in_background` 真返回 `bash-053247bda5544687`；`job_output` 读回真实输出。
+
+⚠️ **它读的是 `dsh-jobs-local` 的内部结构**，dsh 哪天改了这层，补挂会失效 ——
+所以那一支必须是 error 而不是“一切正常”。
+
 ## 0.2.2（2026-10-31）
 
 ### 行为变：观测页「在不在」进注入，续接率的分母不再只增不减
