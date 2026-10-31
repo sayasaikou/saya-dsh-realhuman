@@ -92,6 +92,17 @@ RUNTIME_DIR="$DSH_HOME/realheart"
 PIDFILE="$RUNTIME_DIR/rh-status.pid"
 CFGJSON="$RUNTIME_DIR/runtime/config.json"
 
+# ── 共用资料扫描（2026-10-31）──
+# $DSH_HOME/realheart 和 stateDir 都**不按 profile 分**，所有 profile 共用一份。
+# 这个脚本对它们做任何“停/删”之前，都得先知道还有没有别的 profile 在用。
+# 教训：先只给第 5 步加了守卫，结果第 2 步（停观测页）踩同一个坑 —— 所以一次扫完整条路径。
+OTHER_PROFILES=''
+for _pkg in "$DSH_HOME"/profiles/*/package.json; do
+  [ -f "$_pkg" ] || continue
+  [ "$_pkg" = "$PROFILE/package.json" ] && continue
+  grep -q '"realheart"' "$_pkg" 2>/dev/null && OTHER_PROFILES="$OTHER_PROFILES $(basename "$(dirname "$_pkg")")"
+done
+
 # stateDir：三个来源，优先级从上到下。
 # ① --state-dir（人说的最算数）② 运行时 config.json（实际生效的那份）③ 默认路径（**猜的**）。
 # 为什么要分“猜的”：卸过一次之后运行时目录就没了，config.json 也跟着没了。
@@ -119,6 +130,9 @@ echo
 # 杀之前认一遍命令行：PID 会回收，杀错一个别人的进程比不杀更糟。
 if [ "$KILL" -eq 0 ]; then
   echo "跳过停观测页（--no-kill）"
+elif [ -n "$OTHER_PROFILES" ]; then
+  echo "不停观测页：还有别的 profile 在用它 ——$OTHER_PROFILES"
+  echo "  （pid 文件是所有 profile 共用的一份，停了它们会一起没页面）"
 elif [ ! -f "$PIDFILE" ]; then
   echo "没有 pid 文件 —— 观测页本来就没在跑，或者已经停过"
 else
@@ -218,14 +232,8 @@ echo
 #   有人用 → 不删，把是谁打出来
 #   没人用 → 删（最后一个用它的已经卸了，口令不该留在盘上）
 if [ -d "$RUNTIME_DIR" ]; then
-  OTHER=""
-  for pkg in "$DSH_HOME"/profiles/*/package.json; do
-    [ -f "$pkg" ] || continue
-    [ "$pkg" = "$PROFILE/package.json" ] && continue
-    grep -q '"realheart"' "$pkg" 2>/dev/null && OTHER="$OTHER $(basename "$(dirname "$pkg")")"
-  done
-  if [ -n "$OTHER" ]; then
-    echo "运行时目录先不删：还有别的 profile 在用它 ——$OTHER"
+  if [ -n "$OTHER_PROFILES" ]; then
+    echo "运行时目录先不删：还有别的 profile 在用它 ——$OTHER_PROFILES"
     echo "  （$RUNTIME_DIR 是所有 profile 共用的一份，删了它们会一起没观测页）"
     echo "  真要让它们都停：先把上面那几个也卸了，或者自己 rm -rf $RUNTIME_DIR"
   else
@@ -253,6 +261,14 @@ fi
 echo
 
 if [ "$PURGE" -eq 1 ]; then
+  # 账本也是共用的：两个 profile 用同一个 stateDir 是常态。
+  # 卸其中一个就 --purge，删的是所有人的账本。
+  if [ -n "$OTHER_PROFILES" ]; then
+    echo "--purge 拒绝执行：还有别的 profile 在用它 ——$OTHER_PROFILES"
+    echo "  stateDir 不按 profile 分，删了它们一起没账本。"
+    echo "  真要让它们都停：先把上面那几个也卸了。"
+    exit 1
+  fi
   # --purge 不许猜。删账本这条路上一旦猜错，删掉的是别人的东西，而且不可逆。
   if [ "$STATE_FROM" = '默认路径（猜的）' ]; then
     echo "--purge 拒绝执行：手里没有依据，不知道该删哪个目录。"
