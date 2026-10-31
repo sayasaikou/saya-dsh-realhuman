@@ -303,6 +303,36 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
       `路径 ${forgetLog} —— 这是唯一能证明「删过什么」的东西，别删它`);
   }
 
+  // ── 13. 后台作业控制器（2026-10-31）──
+  // 为什么它得在 doctor 里：后台作业现在是靠 realheart 兜底活着的。
+  // dsh 一升级，那个兜底可能**静默失效** —— 日志里只会多几条 already registered，
+  // 不会说「后台作业没了」。靠人记得「升级后重验」已经被证明靠不住（同一天三次），
+  // 所以把它变成一条可执行的检查。
+  const jobsPath = join(stateDir, 'jobs-controller.jsonl');
+  if (!existsSync(jobsPath)) {
+    add('warn', '后台作业控制器', '没有 jobs-controller.jsonl（0.2.4 起才写）',
+      '重启一次就会生成。一直不生成 = 那一路没跑到，看启动日志里有没有「jobs：」');
+  } else {
+    const rows = (await readFile(jobsPath, 'utf8')).split('\n').filter((x) => x.trim());
+    let last = null;
+    try {
+      last = JSON.parse(rows[rows.length - 1] ?? '{}');
+    } catch {
+      last = null;
+    }
+    if (!last?.branch) {
+      add('warn', '后台作业控制器', '记录文件里有坏行，读不出最后一次', `看 ${jobsPath}`);
+    } else if (last.branch === 'present') {
+      add('ok', '后台作业控制器', `global 层本来就有控制器（${last.at}），不需要兜底`);
+    } else if (last.branch === 'attach') {
+      add('warn', '后台作业控制器', `global 层原本是空的，靠兜底补挂（${last.at}）`,
+        '能用但不正常。dsh 升级后重跑一次 doctor：这项变成 FAIL 就说明兜底失效了，后台作业会悄悄地又没了');
+    } else {
+      add('fail', '后台作业控制器', `读不到 layers.global.controllers（${last.at}）—— 兜底没生效`,
+        'dsh 改了内部结构。查 dsh-jobs-local 怎么暴露 controllers，改 realheart 那一支兜底；在那之前后台作业不可用');
+    }
+  }
+
   const summary = { ok: 0, warn: 0, fail: 0 };
   for (const it of items) summary[it.level] += 1;
   return { items, summary, stateDir, pagePort };

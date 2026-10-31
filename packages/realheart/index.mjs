@@ -1212,11 +1212,14 @@ export function apply(ctx, config = {}) {
         }
         const controllers = jobs?.layers?.global?.controllers;
         const before = typeof controllers?.isEmpty === 'function' ? controllers.isEmpty() : 'n/a';
+        let branch = 'unknown';
         if (before === true && typeof jobs.attachController === 'function') {
           jobs.attachController('realheart-fallback');
           const after = typeof controllers?.isEmpty === 'function' ? controllers.isEmpty() : 'n/a';
+          branch = 'attach';
           log(`jobs：global 层原本没控制器，已补挂一个（空=${before} → ${after}）`);
         } else if (before === false) {
+          branch = 'present';
           log('jobs：global 层已经有控制器，不重复挂');
         } else {
           // 读不到那个结构 = 兜底失效。**这一支必须报 error**：
@@ -1224,6 +1227,11 @@ export function apply(ctx, config = {}) {
           // 而 warn 会悄悄回来 —— 那正是我们刚从四个小时前挖出来的那种“静默失效”。
           log('jobs：读不到 layers.global.controllers 这个结构，没补挂 —— 后台作业的 warn 要是回来了，先查这里', 'error');
         }
+        // 落一行给 doctor 看：它是另起的进程，看不到这里的运行时。
+        // 不写这一行，「后台作业靠兜底活着」就只活在 journald 里，得有人想起来翻。
+        void appendFile(join(cfg.stateDir, 'jobs-controller.jsonl'),
+          `${JSON.stringify({ at: new Date().toISOString(), branch, before: String(before) })}\n`, 'utf8')
+          .catch(() => { /* 写不了不影响兜底本身 */ });
       } catch (err) {
         log(`jobs 兜底失败：${err?.message ?? err}`, 'error');
       }
