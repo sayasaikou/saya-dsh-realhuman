@@ -596,6 +596,77 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** 观测页口令 —— 插件自己写在 runtime/config.json 里，用来应 healthz */
+  async function pageSecret() {
+    try {
+      const j = JSON.parse(await readFile(join(DSH_HOME, 'realheart', 'runtime', 'config.json'), 'utf8'));
+      return String(j?.secret ?? '');
+    } catch {
+      return '';
+    }
+  }
+
+  /** 端口上是不是自己人在应 healthz。带口令探，不带只看到 404。 */
+  async function pageAnswers() {
+    const secret = await pageSecret();
+    if (!secret) return false;
+    try {
+      const r = await fetch(`http://127.0.0.1:${cfg.pagePort}/${secret}/healthz`,
+        { signal: AbortSignal.timeout(800) });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 观测页现在在不在。
+   *
+   * 2026-10-31 第二版。第一版只看 pid 文件：pid 文件里有号码 → /proc/<pid>/cmdline 里有
+   * rh-status.py → 算「在」。当天实测撞出一个假阴性：把 pid 文件写成一个死号，页面 821451
+   * 明明还听着 8098，注入却说「不在」。**那一行问的是「文件里那个号活着吗」，不是「页面在不在」。**
+   *
+   * 所以判据改成以端口为准：
+   *   ① 快路：pid 文件里的号还活着且 cmdline 对得上 → 再探一次 healthz 确认它真的在听
+   *      （进程活着不等于端口活着）；
+   *   ② 快路不通（号死了 / 号被复用 / 文件陈旧）→ **不再直接判死**，改去问端口；
+   *   ③ 端口也不应 → 才说不在。
+   *
+   * 不看 ppid：detached spawn 出来的旧一代页面 ppid 是 1，但页面是好的。
+   * ppid 只在验收「这一代插件有没有自己起页面」时用。
+   */
+  async function statusPageState() {
+    if (cfg.servePage === false) return { alive: false, text: '观测页：未启用（servePage=false）' };
+
+    let pid = 0;
+    try {
+      pid = Number((await readFile(join(DSH_HOME, 'realheart', 'rh-status.pid'), 'utf8')).trim());
+    } catch {
+      pid = 0;
+    }
+    let cmdOk = false;
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        const cmd = (await readFile('/proc/' + pid + '/cmdline', 'utf8')).replace(/\0/g, ' ').trim();
+        cmdOk = cmd.includes('rh-status.py');
+      } catch {
+        cmdOk = false;
+      }
+    }
+
+    const listening = await pageAnswers();
+    if (listening) {
+      if (cmdOk) return { alive: true, text: `观测页：在（pid ${pid}）` };
+      return {
+        alive: true,
+        text: `观测页：在（端口 ${cfg.pagePort} 有响应；pid 文件写的是 ${pid > 0 ? pid : '（空）'}，那个号对不上）`,
+      };
+    }
+    if (cmdOk) return { alive: false, text: `观测页：不在（pid ${pid} 活着，但端口 ${cfg.pagePort} 没响应）` };
+    if (pid > 0) return { alive: false, text: `观测页：不在（pid ${pid} 已经不在，端口 ${cfg.pagePort} 也没响应）` };
+    return { alive: false, text: `观测页：不在（pid 文件读不到，端口 ${cfg.pagePort} 也没响应）` };
+  }
+
   if (cfg.injectMood !== false) {
     // ⚠️ { global: true } 不是可选的：system-prompt/assemble 按作用域触发，
     //    不带这个选项就收不到事件 —— 表现是“注册了、没报错、永远不生效”。
@@ -630,6 +701,12 @@ export function apply(ctx, config = {}) {
           await noteInjectProblem('pending', err);
         }
         try {
+          const sp = await statusPageState();
+          parts.push(sec('realheart:status-page', 904, sp.text));
+        } catch (err) {
+          await noteInjectProblem('status-page', err);
+        }
+        try {
           const kept = await readKept();
           // 原样呈现，不加「这是为了提醒你」之类的话 —— 她要求的就是这个
           if (kept.length) parts.push(sec('realheart:kept', 903, ['【你留下的话】', ...kept.map((k) => `· ${k.text}`)].join('\n')));
@@ -645,6 +722,7 @@ export function apply(ctx, config = {}) {
           'realheart:mood': 100,
           'realheart:kept': 80,
           'realheart:pending': 60,
+          'realheart:status-page': 55,
           'realheart:pending-change': 40,
         };
         const budget = Number(cfg.injectBudgetChars) > 0 ? Number(cfg.injectBudgetChars) : 0;

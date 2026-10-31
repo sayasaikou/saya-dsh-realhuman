@@ -110,3 +110,31 @@ test('注入文本：只陈述，不给建议', () => {
   assert.doesNotMatch(text, /建议|应该|加油/);
 });
 
+// ── 2026-10-31：drop 之后「新增」要减掉，但兑现过的不动 ──
+function evDated(action, text, extra = {}) {
+  return { action, text, fp: fingerprint(text), at: '2026-10-31T10:00:00+08:00', session: 's', ...extra };
+}
+
+test('续接率：自己加又自己删的那条，不算进新增', () => {
+  const fp = fingerprint('测试项');
+  const rows = [
+    evDated('add', '真事一', { turn: 1 }),
+    evDated('add', '测试项', { turn: 2 }),
+    { action: 'drop', fp, ref: fp, at: '2026-10-31T10:01:00+08:00', session: 's' },
+    evDated('add', '真事二', { turn: 3 }),
+  ];
+  const r = continuationRate(rows, { session: 's' });
+  assert.equal(r.added, 2);
+});
+
+test('续接率：兑现过再删掉，分母不许改小（drop 不能事后改历史）', () => {
+  const fp = fingerprint('做完的活');
+  const rows = [
+    evDated('add', '做完的活', { turn: 1 }),
+    { action: 'check', fp, ref: fp, at: '2026-10-31T10:05:00+08:00', turn: 3, session: 's', evidence: 'a:2026-10-31#1' },
+    { action: 'drop', fp, ref: fp, at: '2026-10-31T10:06:00+08:00', session: 's' },
+  ];
+  const r = continuationRate(rows, { session: 's' });
+  assert.equal(r.added, 1);
+});
+

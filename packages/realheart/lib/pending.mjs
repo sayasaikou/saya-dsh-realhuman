@@ -151,12 +151,45 @@ export function fulfillMedian(state) {
 }
 
 /**
+ * 活着的 add：回放一遍，被 drop 掉的不再计入新增。
+ *
+ * 2026-10-31：原来直接 rows.filter(e => e.action === 'add')，drop 之后 add 事件
+ * 还留在流水里，分母只增不减 —— 测试项自己加的又自己删的，会永久算进「新增」，
+ * 把续接率的分母撞起来。drop 可能按 ref 行号定位而不是 fp，所以不能只按 fp 过。
+ */
+function liveAdds(rows) {
+  let state = emptyState();
+  const keep = [];
+  for (const ev of rows) {
+    const next = applyEvent(state, ev);
+    if (!next) continue;
+    if (ev.action === 'add') keep.push(ev);
+    if (ev.action === 'drop') {
+      const idx = findIndex(state, ev?.ref ?? String(ev?.fp ?? ''));
+      // **只抹没被勾过的**。已经 check 过的那条已经从「新增」走到分子那边了，
+      // 事后再 drop 掉不能把分母改小 —— 那等于事后改历史（这条是 2026-10-31 账上定的）。
+      if (idx >= 0 && !state.items[idx].checked_at) {
+        const fp = String(state.items[idx].fp);
+        for (let j = keep.length - 1; j >= 0; j -= 1) {
+          if (String(keep[j].fp ?? '') === fp) {
+            keep.splice(j, 1);
+            break;
+          }
+        }
+      }
+    }
+    state = next;
+  }
+  return keep;
+}
+
+/**
  * 续接率：K 轮内被勾掉的 ÷ 新增。
  * 只在同一会话内算（跨会话轮次不可比），分子只算有佐证的勾。
  */
 export function continuationRate(events, { k = K_ROUNDS, session = null } = {}) {
   const rows = events.filter((e) => (session == null ? true : e.session === session));
-  const added = rows.filter((e) => e.action === 'add');
+  const added = liveAdds(rows);
   const checkedByFp = new Map();
   for (const e of rows) {
     if (e.action !== 'check' || !e.evidence) continue;
