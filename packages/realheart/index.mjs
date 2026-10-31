@@ -756,8 +756,16 @@ export function apply(ctx, config = {}) {
           // 只写 latest 就是 2026-10-31 撞到的那个 bug：后起的实例一覆盖，
           // 上一个实例那轮「她到底看到什么」就没了。
           const injectPaths = lastInjectPaths(cfg.stateDir, instanceTagFrom(process.argv));
-          await writeFile(injectPaths.latest, payload, 'utf8');
-          await writeFile(injectPaths.perInstance, payload, 'utf8');
+          // 600 要在创建那一刻就给：writeFile 默认吃 umask（一般是 644），
+          // 而收紧权限那段（tightenStatePerms）只在启动时跑一次 —— 新文件是之后才出现的，
+          // 它收不到。2026-10-31 实测：`last-inject.qqbot.md` 出来时是 -rw-r--r--，
+          // doctor 的「账本权限」当场从 ok 变成 warn。
+          // mode 只管新建；已存在的文件得补一次 chmod，两个都做才算收干净。
+          const W600 = { encoding: 'utf8', mode: 0o600 };
+          await writeFile(injectPaths.latest, payload, W600);
+          await writeFile(injectPaths.perInstance, payload, W600);
+          await chmod(injectPaths.latest, 0o600).catch(() => {});
+          await chmod(injectPaths.perInstance, 0o600).catch(() => {});
         } catch {
           /* 落盘失败就算了，注入优先 */
         }
