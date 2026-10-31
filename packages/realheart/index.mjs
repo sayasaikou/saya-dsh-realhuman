@@ -20,6 +20,7 @@
  */
 
 import { Config, DEFAULTS, DSH_HOME, QQROOT, validateConfig, loadUserConfig, describeConfig } from './lib/config.mjs';
+import { instanceTagFrom, lastInjectPaths } from './lib/instance-tag.mjs';
 import { maskSecret, pageHint, whereSecret } from './lib/secrets.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -751,7 +752,12 @@ export function apply(ctx, config = {}) {
         // 把她这一轮看到的原文落一份 —— debug 页和“她自己查”都靠它。
         // 写失败不能影响注入，所以单独包一层。
         try {
-          await writeFile(join(cfg.stateDir, 'last-inject.md'), payload, 'utf8');
+          // 两份：latest 给 doctor 和页面（保持旧接口），perInstance 只归这个实例写。
+          // 只写 latest 就是 2026-10-31 撞到的那个 bug：后起的实例一覆盖，
+          // 上一个实例那轮「她到底看到什么」就没了。
+          const injectPaths = lastInjectPaths(cfg.stateDir, instanceTagFrom(process.argv));
+          await writeFile(injectPaths.latest, payload, 'utf8');
+          await writeFile(injectPaths.perInstance, payload, 'utf8');
         } catch {
           /* 落盘失败就算了，注入优先 */
         }
