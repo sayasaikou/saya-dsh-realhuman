@@ -457,3 +457,21 @@ test('尾部窗口里最后一条被作废时，回落到窗口内上一条', as
     await rm(h.root ?? h.stateDir, { recursive: true, force: true });
   }
 });
+// ── T0-④：账本目录不可写时，注入照常但要有痕迹 ──
+
+test('账本目录写不进去时，注入照常发出，日志里必须有一句', async () => {
+  // 拿一个「是文件不是目录」的路径当 stateDir：mkdir 和写都会失败，且跨平台稳定
+  const root = await mkdtemp(join(tmpdir(), 'rh-badstate-'));
+  const notADir = join(root, 'notadir');
+  await writeFile(notADir, 'x');
+  const h = await boot({ stateDir: notADir });
+  try {
+    const inj = h.handlers.find((x) => x.name === 'system-prompt/assemble');
+    const out = await inj.fn({ sections: [] }, {}, async () => ({ sections: [] }));
+    assert.ok(out && typeof out === 'object', '注入抛了 —— 那她会一句话都发不出去');
+    const said = h.logs.map((l) => l[1]).join('\n');
+    assert.match(said, /注入快照没写下来/, '写不下快照却一声不响 —— doctor 会以为「最近没注入过」');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

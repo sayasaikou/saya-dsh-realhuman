@@ -766,8 +766,12 @@ export function apply(ctx, config = {}) {
           await writeFile(injectPaths.perInstance, payload, W600);
           await chmod(injectPaths.latest, 0o600).catch(() => {});
           await chmod(injectPaths.perInstance, 0o600).catch(() => {});
-        } catch {
-          /* 落盘失败就算了，注入优先 */
+        } catch (err) {
+          // 落盘失败不能只是「算了」（2026-10-31 真机验出来的）。
+          // 账本目录不可写时：注入照常发出、她也照常说话，但快照写不下来 ——
+          // 而 doctor 的「注入」那一项会读成「最近没注入过」。
+          // **「注入了但写不下来」和「根本没注入」在页面上长得一模一样**，那正是这套东西最坏的坏法。
+          log(`注入快照没写下来（${err?.code ?? err?.message ?? err}）—— 注入本身照常发出`, 'error');
         }
         return { ...assembled, sections: [...sections, ...parts] };
       } catch (err) {
