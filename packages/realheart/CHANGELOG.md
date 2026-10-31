@@ -5,6 +5,40 @@
 
 ---
 
+## 0.2.6（2026-10-31）
+
+### 🔴 卸载脚本会把别人的观测页一起删掉（今天真删了一次）
+
+写发布验收的时候跑了一轮卸载，结果把**生产那台的观测页连根删了**：
+
+- `$DSH_HOME/realheart/` 里有 `config.json`（48 位口令）、`rh-status.py`、`rh-status.pid`
+- 这个目录**不按 profile 分**，所有 profile 共用一份
+- 而卸载脚本第 5 步无条件 `rm -rf` 它
+
+「卸 A 把 B 弄坏」不是假设：卸一个空 profile，连带把生产那台的观测页、口令、运行时全删了。
+表现是注入里变成「观测页：不在（pid 文件读不到，端口 8098 也没响应）」。
+重启一次重铺目录、重新生成口令，旧页面地址作废。
+
+**改法：删之前先问「还有谁在用」，不靠猜。**
+
+扫 `profiles/*/package.json` 的 bundles：还有别的 profile 写着 realheart 就不删，把名字打出来；
+一个都没有才删（最后一个用它的也卸了，明文口令不该留在盘上）。
+
+实测：
+
+```
+只有 qqbot         → [dry-run] rm -rf /home/ubuntu/.dsh/realheart
+加一个写着 realheart 的假 profile → 运行时目录先不删：还有别的 profile 在用它 —— rt-guard
+```
+
+### 0.2.4 / 0.2.5（补记，当时只提了代码没写这节）
+
+- **0.2.4**：插件每次启动往 `stateDir/jobs-controller.jsonl` 追一行（`branch` = attach / present / unknown）；
+  `doctor` 多一项「后台作业控制器」。目的是把「升级后重验」从记性变成一条命令。
+- **0.2.5**：补上两个洞 —— `ctx.get('jobs')` 拿不到服务时原来裸 `return`，doctor 于是把它读成
+  「还没跑到，重启就会生成」，而真相是重启一百次也不会生成。现在 `no-service` / `exception`
+  两支都写记录、doctor 都判 FAIL，文案写明「重启不会自愈」。
+
 ## 0.2.3（2026-10-31）
 
 ### 后台作业：从 app 层补挂一个 controller（兜底）

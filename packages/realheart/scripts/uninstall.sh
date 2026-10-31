@@ -208,12 +208,33 @@ echo
 
 # ── 5. 删运行时 ──
 # 这里有 config.json，里面有 48 位 secret。不删掉等于把“观测页口令”留在盘上。
+#
+# 🔴 2026-10-31：这个目录**是所有 profile 共用的一份**（$DSH_HOME/realheart，不按 profile 分）。
+#    所以删之前必须先问一句：还有没有别的 profile 装着 realheart？
+#    不问就删，就是「卸 A 把 B 一起弄坏」—— 这一天真的发生过：卸一个测试 profile，
+#    把生产那台的观测页、口令、运行时全删了。
+#
+# 判据（不是猜）：扫 profiles/*/package.json 的 bundles，看还有谁写着 realheart。
+#   有人用 → 不删，把是谁打出来
+#   没人用 → 删（最后一个用它的已经卸了，口令不该留在盘上）
 if [ -d "$RUNTIME_DIR" ]; then
-  run rm -rf "$RUNTIME_DIR"
-  if [ "$DRY" -eq 1 ]; then
-    echo "  ↑ 这一步删的是运行时目录（里面有 48 位口令 config.json）"
+  OTHER=""
+  for pkg in "$DSH_HOME"/profiles/*/package.json; do
+    [ -f "$pkg" ] || continue
+    [ "$pkg" = "$PROFILE/package.json" ] && continue
+    grep -q '"realheart"' "$pkg" 2>/dev/null && OTHER="$OTHER $(basename "$(dirname "$pkg")")"
+  done
+  if [ -n "$OTHER" ]; then
+    echo "运行时目录先不删：还有别的 profile 在用它 ——$OTHER"
+    echo "  （$RUNTIME_DIR 是所有 profile 共用的一份，删了它们会一起没观测页）"
+    echo "  真要让它们都停：先把上面那几个也卸了，或者自己 rm -rf $RUNTIME_DIR"
   else
-    echo "删了运行时（含口令）：$RUNTIME_DIR"
+    run rm -rf "$RUNTIME_DIR"
+    if [ "$DRY" -eq 1 ]; then
+      echo "  ↑ 这一步删的是运行时目录（里面有 48 位口令 config.json）"
+    else
+      echo "删了运行时（含口令）：$RUNTIME_DIR"
+    fi
   fi
 else
   echo "没有运行时目录，跳过"
