@@ -1,6 +1,6 @@
 {
   "name": "realheart",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "给她一个能记账的心情层：心情必须有来处，改动必须有账，她自己能停能查",
   "type": "module",
   "main": "index.mjs",

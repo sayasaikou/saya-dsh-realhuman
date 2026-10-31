@@ -1207,7 +1207,13 @@ export function apply(ctx, config = {}) {
       try {
         const jobs = ctx.get('jobs');
         if (!jobs) {
-          log('jobs 诊断：ctx.get("jobs") 拿不到服务');
+          // ⚠️ 这一支原来直接 return，于是 doctor 那边只会看到「没有记录文件」，
+          // 自动写成「还没跑到，重启一次就会生成」—— 而真相是拿不到服务，
+          // 重启一百次也不会生成。提示说 A、真相是 B，正是今天立得最粗的那条禁忌。
+          log('jobs：插件里拿不到 jobs 服务 —— 后台作业不可用，且重启不会自愈', 'error');
+          void appendFile(join(cfg.stateDir, 'jobs-controller.jsonl'),
+            `${JSON.stringify({ at: new Date().toISOString(), branch: 'no-service' })}\n`, 'utf8')
+            .catch(() => { /* 写不了不影响结论 */ });
           return;
         }
         const controllers = jobs?.layers?.global?.controllers;
@@ -1234,6 +1240,10 @@ export function apply(ctx, config = {}) {
           .catch(() => { /* 写不了不影响兜底本身 */ });
       } catch (err) {
         log(`jobs 兜底失败：${err?.message ?? err}`, 'error');
+        // 抛了也要留一行 —— 不然 doctor 又会把「出错了」读成「还没跑到」
+        void appendFile(join(cfg.stateDir, 'jobs-controller.jsonl'),
+          `${JSON.stringify({ at: new Date().toISOString(), branch: 'exception', why: String(err?.message ?? err) })}\n`, 'utf8')
+          .catch(() => {});
       }
     })();
 

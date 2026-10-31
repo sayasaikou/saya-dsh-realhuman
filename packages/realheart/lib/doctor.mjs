@@ -311,7 +311,7 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
   const jobsPath = join(stateDir, 'jobs-controller.jsonl');
   if (!existsSync(jobsPath)) {
     add('warn', '后台作业控制器', '没有 jobs-controller.jsonl（0.2.4 起才写）',
-      '重启一次就会生成。一直不生成 = 那一路没跑到，看启动日志里有没有「jobs：」');
+      '两种可能：插件还没重启到 0.2.4；或者那一路在写之前就挂了。重启一次还是没这个文件，就是后者');
   } else {
     const rows = (await readFile(jobsPath, 'utf8')).split('\n').filter((x) => x.trim());
     let last = null;
@@ -327,6 +327,12 @@ export async function runDoctor({ dshHome = DSH_HOME } = {}) {
     } else if (last.branch === 'attach') {
       add('warn', '后台作业控制器', `global 层原本是空的，靠兜底补挂（${last.at}）`,
         '能用但不正常。dsh 升级后重跑一次 doctor：这项变成 FAIL 就说明兜底失效了，后台作业会悄悄地又没了');
+    } else if (last.branch === 'no-service') {
+      add('fail', '后台作业控制器', `插件里拿不到 jobs 服务（${last.at}）—— 重启不会自愈`,
+        '这个 profile 的组合里没有 jobs 服务：查 bundles 里有没有 @deepseek-ai/dsh-jobs-local，以及它有没有加载成功');
+    } else if (last.branch === 'exception') {
+      add('fail', '后台作业控制器', `兜底抛错了（${last.at}）：${last.why ?? '原因没记下来'}`,
+        '看启动日志里「jobs 兜底失败」那一行；多数是 dsh 改了这个内部结构');
     } else {
       add('fail', '后台作业控制器', `读不到 layers.global.controllers（${last.at}）—— 兜底没生效`,
         'dsh 改了内部结构。查 dsh-jobs-local 怎么暴露 controllers，改 realheart 那一支兜底；在那之前后台作业不可用');
